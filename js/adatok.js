@@ -216,7 +216,7 @@ cfg.fakeFiles = ['kitalalt-kerelem.pdf', 'kitalalt-hatarozat.pdf', 'kitalalt-kon
 
 /* ---------------- Világépítő segédek ---------------- */
 function world(clock, name) {
-  const w = { v: 5, world: name, clock, seq: 1, patients: [], cares: [], appearances: [], cases: [], tasks: [], duty: [], reminders: [], audit: [],
+  const w = { v: 6, world: name, clock, seq: 1, patients: [], cases: [], tasks: [], rels: [], cares: [], appearances: [], duty: [], reminders: [], audit: [],
     views: [], absences: [], renames: {}, drafts: {}, prefs: {}, fired: {}, types: [], accounts: [], admins: [],
     areas: [], variants: [], series: [], members: [], duties: [] };
   conf(w); return w;
@@ -253,7 +253,7 @@ function kase(w, o) {
     id: o.id, patientId: o.p || null, profileId, areaId: o.area || TPL_AREA[profileId][type], type, title: o.title || '',
     step: o.step || cfg.types[type].steps[0].id, owners: o.owners || [], watchers: o.watchers || [], due: o.due || null,
     his: o.his || [], startedAs: o.startedAs || 'járó', appearanceId: o.appearance || null, data: o.data || {}, note: o.note || '',
-    links: o.links || [], prev: o.prev || null, closed: o.closed || null, waitSince: o.waitSince || null,
+    prev: o.prev || null, closed: o.closed || null, waitSince: o.waitSince || null,
     created: o.created || { at: '2026-11-01T09:00', by: (o.owners && o.owners[0]) || 'demo' },
     history: o.history || [], ver: 1, contacts: o.contacts || [], files: o.files || [], labels: o.labels || [],
     meeting: o.meeting || null, triage: o.triage || null, decision: o.decision || '', participants: o.participants || [],
@@ -269,6 +269,9 @@ function task(w, o) {
     created: o.created || { at: '2026-11-01T09:00', by: 'demo' }, ver: 1, spawned: o.spawned || null, note: o.note || '' };
   w.tasks.push(t); return t;
 }
+/* Kapcsolat két ügy között (K4.11): egy rekord, mindkét végéről olvasva. A fajta: ebből indult (teendőből), hosszabbítás, új kérelem,
+   új előjegyzés (a folytatás három módja), vagy kapcsolódik (kézzel kapcsolva; ennek nincs kiinduló ügye). A felirat a fajtából jön, szabad szöveg nincs. */
+function rel(w, kind, from, to, at, who) { w.rels.push({ id: 'l' + (w.rels.length + 1), kind, from, to, at: at || '2026-11-01T09:00', by: who || 'demo', ver: 1 }); }
 function duty(w, o) {
   const y = { id: o.id, dir: o.dir || 'to', patientId: o.p || null, profileId: o.profile, caseId: o.c || null, text: o.text, due: o.due,
     by: o.by, at: o.at, accepted: o.accepted || null, note: o.note || '', closed: o.closed || null, ver: 1 };
@@ -307,25 +310,26 @@ function base(name) {
   kase(w, { id: 'k6', p: 'p8', type: 'labor', step: 'var', owners: ['demo'], waitSince: '2026-11-10', appearance: 'a1', created: { at: '2026-11-10T10:20', by: 'demo' },
     data: { test: 'Varicella-szerológia', requestedOn: '2026-11-10', expectedOn: '2026-11-19', notify: 'demo' }, his: [{ kind: 'kérés', ref: 'K-222222' }] });
   kase(w, { id: 'k7', p: 'p8', type: 'vizsgalat', step: 'idop', owners: ['naptar'], watchers: ['demo'], waitSince: '2026-11-08', title: 'Kontroll-MR, mindkét csípő',
-    created: { at: '2026-05-14T13:00', by: 'demo' }, data: { exam: 'MR', region: 'mindkét csípő', from: '2026-11-23', to: '2026-12-18', anesthesia: false },
-    his: [{ kind: 'kérés', ref: 'K-333333' }], links: [{ id: 'k8', rel: 'a konzíliumi döntésből' }] });
+    created: { at: '2026-05-14T15:10', by: 'demo' }, data: { exam: 'MR', region: 'mindkét csípő', from: '2026-11-23', to: '2026-12-18', anesthesia: false },
+    his: [{ kind: 'kérés', ref: 'K-333333' }] });
   task(w, { id: 't3', c: 'k7', text: 'Időpont sürgetése a radiológián', owner: 'naptar', due: '2026-11-10', created: by('naptar', '2026-11-08T09:00') });
   task(w, { id: 't4', c: 'k7', text: 'Kérőlap pótlása a HIS-ben', owner: 'naptar', due: '2026-11-12', created: by('naptar', '2026-11-08T09:05') });
   kase(w, { id: 'k8', p: 'p8', type: 'radio', step: 'ten', owners: ['demo'], meeting: '2026-05-14', triage: 'megbeszéljük', created: { at: '2026-05-11T10:00', by: 'demo' },
     data: { question: 'Mindkét csípő: aktív-e a gyulladás?', region: 'mindkét csípő', summary: 'Csípőfájdalom, mozgáskorlátozottság.' }, his: [{ kind: 'felvétel', ref: 'K-777777' }],
     decision: 'Mérsékelt synovitis mindkét csípőben; kontroll-MR fél év múlva.', discussedAt: '2026-05-14T14:00', decidedAt: '2026-05-14T15:10',
     labels: ['szisztémás JIA', 'csípő synovitis'], closed: { reason: 'teljesült', at: '2026-05-20T09:00', by: 'demo' } });
+  task(w, { id: 't16', c: 'k8', text: 'Kontroll-MR fél év múlva', owner: 'naptar', due: '2026-11-16', done: by('demo', '2026-05-14T15:10'), spawned: 'k7', created: by('demo', '2026-05-14T15:10') });
   kase(w, { id: 'k9', p: 'p8', type: 'vizsgalat', step: 'vizs', owners: ['naptar'], watchers: ['demo'], title: 'MR, mindkét csípő', created: { at: '2026-04-29T09:00', by: 'demo' },
     data: { exam: 'MR', region: 'mindkét csípő', from: '2026-04-30', to: '2026-05-15', appointment: '2026-05-06', anesthesia: false },
     his: [{ kind: 'kérés', ref: 'K-747474' }, { kind: 'lelet', ref: 'K-777777' }], closed: { reason: 'teljesült', at: '2026-05-06T15:00', by: 'naptar' } });
   kase(w, { id: 'k10', p: 'p2', type: 'radio', step: 'ten', owners: ['demo'], meeting: '2026-11-05', triage: 'megbeszéljük', created: { at: '2026-11-02T10:00', by: 'demo' },
     data: { question: 'Aktív-e a synovitis, indokolt-e ízületi injekció?', region: 'jobb térd', summary: 'Jobb térd duzzanata hat hete; az MR elkészült.', ortho: false },
     his: [{ kind: 'felvétel', ref: 'K-444444' }], decision: 'Aktív synovitis a jobb térdben; intraartikuláris szteroid.', discussedAt: '2026-11-05T14:00', decidedAt: '2026-11-05T15:00',
-    labels: ['oligoartikuláris JIA', 'synovitis'], links: [{ id: 'k12', rel: 'az MR-előjegyzés' }] });
+    labels: ['oligoartikuláris JIA', 'synovitis'] });
   task(w, { id: 't5', c: 'k10', text: 'Ízületi injekció előjegyzése, jobb térd', owner: 'demo', due: '2026-11-19', created: by('demo', '2026-11-05T15:00') });
-  task(w, { id: 't6', c: 'k10', text: 'Kontroll-MR fél év múlva', owner: 'naptar', due: '2026-11-12', done: by('naptar', '2026-11-06T10:00'), spawned: 'k11', created: by('demo', '2026-11-05T15:00') });
+  task(w, { id: 't6', c: 'k10', text: 'Kontroll-MR fél év múlva', owner: 'naptar', due: '2026-11-12', done: by('demo', '2026-11-05T15:00'), spawned: 'k11', created: by('demo', '2026-11-05T15:00') });
   kase(w, { id: 'k11', p: 'p2', type: 'vizsgalat', step: 'eloj', owners: ['naptar'], watchers: ['demo'], title: 'Kontroll-MR, jobb térd', created: { at: '2026-11-05T15:00', by: 'demo' },
-    data: { exam: 'MR', region: 'jobb térd', from: '2027-05-03', to: '2027-06-04', anesthesia: true }, links: [{ id: 'k10', rel: 'a konzíliumi döntésből' }] });
+    data: { exam: 'MR', region: 'jobb térd', from: '2027-05-03', to: '2027-06-04', anesthesia: true } });
   task(w, { id: 't7', c: 'k11', text: 'Altatásos lista egyeztetése', owner: 'naptar', due: '2026-11-16', created: by('naptar', '2026-11-06T10:00') });
   kase(w, { id: 'k12', p: 'p2', type: 'vizsgalat', step: 'vizs', owners: ['naptar'], watchers: ['demo'], title: 'MR, jobb térd, altatással', appearance: 'a4', created: { at: '2026-10-20T10:00', by: 'demo' },
     data: { exam: 'MR', region: 'jobb térd', from: '2026-10-21', to: '2026-11-10', appointment: '2026-10-29', anesthesia: true },
@@ -371,6 +375,12 @@ function base(name) {
   duty(w, { id: 'y3', p: 'p7', profile: 'gyn', c: 'k20', text: 'Szintmérés megjött? Ha nem: labor', by: 'ideg', at: '2026-11-17T07:45', due: '2026-11-17T22:00' });
   duty(w, { id: 'y4', p: null, profile: 'gyn', text: 'Az EEG-labor gépe éjjel szervizre megy; reggel nézd meg, visszakerült-e', by: 'ideg', at: '2026-11-17T07:50', due: '2026-11-18T08:00' });
   duty(w, { id: 'y5', dir: 'from', p: 'p8', profile: 'gyr', text: 'Reggel kérjetek kontroll vérképet; a kérőlapot előkészítettem a HIS-ben.', by: 'sablon', at: '2026-11-17T02:10', due: '2026-11-17T10:00' });
+  /* A kapcsolatok mindkét végükről látszanak: a csípő-konzíliumból indult a kontroll-MR, és a bejelentés a megbeszélt MR-re hivatkozott;
+     Teszt Elek konzíliumi esetéből indult a kontroll-MR, és a bejelentés a térd-MR-re hivatkozott */
+  rel(w, 'kapcsolodik', 'k8', 'k9', '2026-05-11T10:00', 'demo');
+  rel(w, 'ebbol', 'k8', 'k7', '2026-05-14T15:10', 'demo');
+  rel(w, 'kapcsolodik', 'k10', 'k12', '2026-11-02T10:00', 'demo');
+  rel(w, 'ebbol', 'k10', 'k11', '2026-11-05T15:00', 'demo');
   w.prefs = { valto: { mode: 'leader', lastBy: { leader: '#/osszesito' } }, sablon: { mode: 'work', lastBy: { work: '#/ugyelet' } } };
   w.seq = 100;
   return w;
@@ -442,7 +452,6 @@ scen.F9 = () => {
     closed: { reason: 'megújítva', at: '2027-01-02T10:00', by: 'urlap' } });
   kase(w, { id: 'k41', p: 'p1', type: 'engedely', step: 'erv', owners: ['urlap'], prev: 'k40', created: { at: '2026-11-18T09:00', by: 'urlap' },
     data: { drug: 'tocilizumab', indication: 'JIA-asszociált uveitis', reqType: 'hosszabbítás', offLabel: true, sentOn: '2026-11-22', decidedOn: '2027-01-02', expiresOn: '2028-01-10' },
-    links: [{ id: 'k40', rel: 'az előző engedély' }],
     files: [{ name: 'kitalalt-kerelem.pdf', at: '2026-11-21T11:00', by: 'demo' }, { name: 'kitalalt-hatarozat.pdf', at: '2027-01-02T10:00', by: 'urlap' }],
     history: [{ at: '2026-11-18T09:00', by: 'urlap', text: 'Hosszabbítás indítva az előző engedélyből; lépés: előkészítendő' },
       { at: '2026-11-21T11:00', by: 'demo', text: 'Lépés: beküldésre kész' }, { at: '2026-11-22T10:00', by: 'urlap', text: 'Lépés: OGYÉI-nél' },
@@ -467,8 +476,12 @@ scen.F9 = () => {
     data: { question: 'Terápiaváltás: rituximab mérlegelése', summary: 'A jelenlegi kezelés mellett is aktív betegség.' },
     decision: 'Terápiaváltás: rituximab indikáción túli alkalmazása; az engedélykérelem előkészítése.', participants: ['demo', 'vazlat', 'keret'], discussedAt: '2026-11-17T13:00', decidedAt: '2026-11-17T13:20',
     closed: { reason: 'teljesült', at: '2026-11-24T12:00', by: 'demo' } });
-  kase(w, { id: 'k48', p: 'p5', type: 'engedely', step: 'erv', owners: ['urlap'], created: { at: '2026-11-17T13:20', by: 'demo' }, links: [{ id: 'k47', rel: 'a D2T-döntésből' }],
+  task(w, { id: 't40', c: 'k47', text: 'Engedélykérelem előkészítése', owner: 'urlap', due: '2026-11-24', done: by('demo', '2026-11-17T13:20'), spawned: 'k48', created: by('demo', '2026-11-17T13:20') });
+  task(w, { id: 't41', c: 'k47', text: 'Megbeszélés a családdal', owner: 'demo', due: '2026-11-27', done: by('demo', '2026-11-24T12:00'), created: by('demo', '2026-11-17T13:20') });
+  kase(w, { id: 'k48', p: 'p5', type: 'engedely', step: 'erv', owners: ['urlap'], created: { at: '2026-11-17T13:20', by: 'demo' },
     data: { drug: 'rituximab', indication: 'szisztémás lupus erythematosus', reqType: 'új', offLabel: true, decidedOn: '2027-01-20', expiresOn: '2028-01-20' } });
+  rel(w, 'hosszabbitas', 'k40', 'k41', '2026-11-18T09:00', 'urlap');
+  rel(w, 'ebbol', 'k47', 'k48', '2026-11-17T13:20', 'demo');
   kase(w, { id: 'k49', p: 'p6', type: 'vizsgalat', step: 'eloj', owners: ['naptar'], title: 'MR, bal csukló', created: { at: '2027-02-15T09:40', by: 'naptar' },
     data: { exam: 'MR', region: 'bal csukló', anesthesia: false }, note: 'Tévedésből ennél a betegnél rögzítve.' });
   kase(w, { id: 'k50', p: 'p7', type: 'engedely', step: 'erv', owners: ['ideg'], created: { at: '2026-10-01T09:00', by: 'ideg' },
@@ -489,7 +502,7 @@ scen.F10 = () => skeleton('2026-11-16T09:00', 'F10', ALL_BUT_VILMA);
 scen.E = () => {
   const w = base('E'); patients(w, ['p10']);
   const gone = {}; w.cases.forEach(c => { if (c.profileId === 'gyn' || cfg.types[c.type].meeting) gone[c.id] = 1; });
-  w.cases = w.cases.filter(c => !gone[c.id]); w.cases.forEach(c => { c.links = c.links.filter(l => !gone[l.id]); });
+  w.cases = w.cases.filter(c => !gone[c.id]); w.rels = w.rels.filter(r => !gone[r.from] && !gone[r.to]);
   w.tasks = w.tasks.filter(t => !gone[t.caseId]);
   w.duty = w.duty.filter(y => y.profileId !== 'gyn'); w.appearances = w.appearances.filter(a => a.profileId !== 'gyn');
   w.patients = w.patients.filter(p => p.id !== 'p7'); w.cares = w.cares.filter(g => g.profileId !== 'gyn');

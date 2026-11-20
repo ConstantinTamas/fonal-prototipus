@@ -27,10 +27,11 @@ const SPRITE = `<svg width="0" height="0" style="position:absolute" aria-hidden=
 <symbol id="i-x" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></symbol>
 <symbol id="i-user" viewBox="0 0 24 24"><circle cx="10" cy="8" r="3.5"/><path d="M3.5 19.5a6.5 6.5 0 0 1 13 0"/><path d="M19 8v6M16 11h6"/></symbol>
 <symbol id="i-out" viewBox="0 0 24 24"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="M16 17l5-5-5-5"/><path d="M21 12H9"/></symbol>
+<symbol id="i-sub" viewBox="0 0 24 24"><path d="M6 4v7a4 4 0 0 0 4 4h9"/><path d="M15 11l4 4-4 4"/></symbol>
 </svg>`;
 
 /* ---------------- A felület állapota (csak ebben a fülben) ---------------- */
-const ui = { r: { name: '', args: [], q: {} }, panel: null, f: {}, undo: {}, prompt: null, focus: null, decide: null, conflict: null, edit: null, hist: false, title: 'Fonal', arch: {}, entered: '' };
+const ui = { r: { name: '', args: [], q: {} }, panel: null, f: {}, undo: {}, prompt: null, focus: null, decide: null, conflict: null, edit: null, hist: false, title: 'Fonal', arch: {}, entered: '', cb: null, cbSpec: {}, kids: {}, kidSeq: 0 };
 const today = () => T.today();
 function parseHash() {
   const h = (location.hash || '#/').replace(/^#\/?/, ''), qi = h.indexOf('?'), path = qi > -1 ? h.slice(0, qi) : h, qs = qi > -1 ? h.slice(qi + 1) : '';
@@ -41,11 +42,12 @@ function parseHash() {
 const go = h => { if (location.hash === h) renderAll(); else location.hash = h; };
 function toast(msg) { const t = document.getElementById('toast'); t.textContent = msg; t.classList.add('is-on'); clearTimeout(toast.tm); toast.tm = setTimeout(() => t.classList.remove('is-on'), 3500); }
 function keep() { const k = {}; Object.keys(ui.undo).forEach(key => { k[key] = ui.undo[key]; }); return k; }
-function withUndo(key, label, r, group) { if (!r || !r.tx) return; ui.undo[key] = { tx: r.tx, label, until: Date.now() + 10000, group: group || 'working' }; ui.focus = 'undo:' + key; }
+/* A visszavonás sora; az „open” (ha van) a most létrejött tétel megnyitása, például a teendőből indult kapcsolt ügyé */
+function withUndo(key, label, r, group, open) { if (!r || !r.tx) return; ui.undo[key] = { tx: r.tx, label, until: Date.now() + 10000, group: group || 'working', open: open || null }; ui.focus = 'undo:' + key; }
 function undoHtml(key) {
   const u = ui.undo[key]; if (!u) return '';
   const n = Math.max(1, Math.ceil((u.until - Date.now()) / 1000));
-  return `<div class="undo"><span>${esc(u.label)}</span><button type="button" data-act="undo" data-key="${esc(key)}" data-k="undo:${esc(key)}">Visszavonás</button><span aria-hidden="true" class="undo-n" data-undo-n="${esc(key)}">${n}</span></div>`;
+  return `<div class="undo"><span>${esc(u.label)}</span>${u.open ? `<a href="${esc(u.open.href)}" data-k="undo-open:${esc(key)}">Megnyitás${sr(': ' + u.open.name)}</a>` : ''}<button type="button" data-act="undo" data-key="${esc(key)}" data-k="undo:${esc(key)}">Visszavonás</button><span aria-hidden="true" class="undo-n" data-undo-n="${esc(key)}">${n}</span></div>`;
 }
 setInterval(() => {
   const t = Date.now(); let changed = false;
@@ -99,6 +101,50 @@ function fmtDate(iso) { return iso ? D.fmt(iso, today()) : ''; }
 /* A saját ügytípus (K4.17) ügyének címe maga az ügytípus neve; a sor és a kártya nem ismétli meg */
 const ownTitled = c => !!T.typeOf(c).custom && T.caseTitle(c) === typeName(c);
 function kindLine(c) { const t = typeName(c), a = T.areaName(c.areaId); if (ownTitled(c)) return 'Saját ügytípus · ' + a; return t === a ? t : t + ' · ' + a; }
+
+/* ---------------- Kapcsolt ügyek (K4.11; CT, 2026-11-19) ----------------
+   Egy fogalom: a teendő az ügyben marad, a kapcsolt ügy a saját áreájában áll. A gyerek sorában (kapcsolt ügy és teendő) a cím fölött,
+   kis szürke betűvel, kattinthatóan a kiinduló ügy neve; a kiinduló ügy sorában lenyitható lista („↳ 1 teendő · 2 kapcsolt ügy”).
+   Csak az látszik, és csak az számol, amit a néző láthat: a saját profilét és a bent fekvő beteg nyitott ügyét részletesen, a többiből
+   orvosként a fejlécet (nem link), nővérként és asszisztensként semmit (K9). */
+/* A rövid név: megbeszélésnél a megbeszélés neve és az alkalom, más ügynél a címe */
+const shortName = c => T.isMeet(c.type) ? typeName(c) + (c.meeting ? ', ' + fmtDate(c.meeting) : '') : T.caseTitle(c);
+/* Csak fejléc (K9.4): közös ügytípus, státusz, dátum, felelős profil */
+const hdrParts = c => [T.commonType(c), c.closed ? 'lezárt' : T.catWord[T.cat(c)], fmtDate(c.created.at.slice(0, 10)), T.profileName(c.profileId), 'csak fejléc'];
+const hdrText = c => hdrParts(c).join(' · ');
+const stateWord = c => c.closed ? 'lezárva: ' + c.closed.reason : T.stepLabel(c);
+const lateText = c => T.permitExpired(c) ? D.diff(today(), c.data.expiresOn) + ' napja lejárt' : T.relDue(T.caseDate(c));
+const detailAcc = acc => acc === 'write' || acc === 'read';
+/* A cím fölötti sor: a kapcsolt ügy sorában a kiinduló ügy, a teendő sorában a teendő ügye. A képernyőolvasó elé: „Kiinduló ügy:” */
+function kinHtml(x, acc) {
+  if (!x || !acc || acc === 'none') return '';
+  return `<span class="kin">${ico('sub')}${detailAcc(acc) ? `<a href="#/ugy/${x.id}">${sr('Kiinduló ügy: ')}${esc(shortName(x))}</a>` : `<span>${sr('Kiinduló ügy: ')}${esc(hdrText(x))}</span>`}</span>`;
+}
+const originKin = c => { const o = T.originOf(c); return o ? kinHtml(o.c, o.acc) : ''; };
+/* Egy kapcsolt ügy alsora: viszony · ügytípus és área · lépés vagy lezárás · felelős */
+function linkedSub(o) {
+  const x = o.c, parts = [o.word, kindLine(x) + (T.isMember(T.me(), x.profileId) ? '' : ' · ' + T.profileName(x.profileId)), stateWord(x)];
+  if (!x.closed) parts.push(x.owners.length ? x.owners.map(userName).join(', ') : 'felelős nélkül');
+  return parts.map(esc).join(' · ') + (T.caseLate(x) ? ` · <span class="late">${ico('alert')}${esc(lateText(x))}</span>` : '');
+}
+/* A lenyitható lista a kiinduló ügy sorában: alapból csukva a munkalistán, nyitva a betegkártyán (a terv 3.3, 3.8). A teendőknél
+   a nyitottakat számolja, a kapcsolt ügyeknél mindet, amit a néző láthat; a listában nincs gomb, minden tétel megnyitható.
+   A sorokban a lenyitó az alsor végén áll, ha elfér, különben az alsor alatt (a koordinátor kérése: a jelölés egy sorban, amíg elfér);
+   a lista a DOM-ban közvetlenül a gomb után jön. A betegkártyán a lenyitó saját sorban áll. */
+function kidsHtml(c, key, def) { const k = kidsParts(c, key, def); return k ? k.btn + k.list : ''; }
+/* Az alsor a lenyitóval: egy sorban, amíg elfér; utána a lista */
+function subWithKids(sub, k) { return k ? `<div class="sub-row"><span class="sub">${sub}</span>${k.btn}</div>` : `<span class="sub">${sub}</span>`; }
+function kidsParts(c, key, def) {
+  const ts = T.openTasksOf(c), ls = T.linkedOf(c);
+  if (!ts.length && !ls.length) return null;
+  const open = ui.kids[key] === undefined ? !!def : ui.kids[key], id = 'kids-' + (++ui.kidSeq), p = c.patientId ? T.P(c.patientId) : null;
+  const n = []; if (ts.length) n.push(ts.length + ' teendő'); if (ls.length) n.push(ls.length + ' kapcsolt ügy');
+  const task = t => `<li><a href="#/ugy/${c.id}?teendo=${t.id}">${esc(t.text)}</a><span class="kid-sub">${t.owner ? esc(userName(t.owner)) : '<strong>felelős nélkül</strong>'}${t.due ? ' · ' + (T.taskLate(t) ? `<span class="late">${ico('alert')}${esc(T.relDue(t.due))}</span>` : esc(fmtDate(t.due))) : ''}</span></li>`;
+  const kase = o => o.acc === 'header' ? `<li class="is-hdr"><span class="kid-title">${esc(T.commonType(o.c))}</span><span class="kid-sub">${esc([o.word].concat(hdrParts(o.c).slice(1)).join(' · '))}</span></li>`
+    : `<li${o.c.closed ? ' class="is-closed"' : ''}><a href="#/ugy/${o.c.id}">${esc(T.caseTitle(o.c))}</a><span class="kid-sub">${linkedSub(o)}</span></li>`;
+  return { btn: `<button class="kids-btn" type="button" aria-expanded="${open}" aria-controls="${id}" data-act="kids" data-key="${esc(key)}" data-def="${def ? 1 : 0}" data-k="kids:${esc(key)}">${ico('sub')}<span class="kids-n">${n.map(esc).join('<span aria-hidden="true"> · </span>' + sr(' és '))}</span>${sr(': ' + T.caseTitle(c) + (p ? ', ' + ptName(p) : ''))}${ico('chev')}</button>`,
+    list: `<div class="kids" id="${id}"${open ? '' : ' hidden'}>${ts.length ? `<p class="kids-h" id="${id}-t">Teendők</p><ul class="kids-list" aria-labelledby="${id}-t">${ts.map(task).join('')}</ul>` : ''}${ls.length ? `<p class="kids-h" id="${id}-k">Kapcsolt ügyek</p><ul class="kids-list" aria-labelledby="${id}-k">${ls.map(kase).join('')}</ul>` : ''}</div>` };
+}
 
 /* ---------------- Lépések: a szokásos következő lépés közvetlen gomb (K11.9) ---------------- */
 const NEXT = {
@@ -192,7 +238,9 @@ function dueCell(it) {
   }
   const dt = T.caseDate(c);
   if (c.meeting && dt === c.meeting && c.meeting === today()) return `${sr('Határidő: ')}<span class="main">ma, ${meetWord(c)}</span><span class="sub">${c.due ? 'határidő: ' + esc(fmtDate(c.due)) : esc(fmtDate(c.meeting))}</span>`;
-  if (c.meeting && !c.due) return `${sr('Alkalom: ')}<span class="main">${it.late ? ico('alert') : ''}${esc(T.relDue(c.meeting))}</span><span class="sub">${meetWord(c)}: ${esc(fmtDate(c.meeting))}</span>`;
+  if (c.meeting && !c.due && dt === c.meeting) return `${sr('Alkalom: ')}<span class="main">${it.late ? ico('alert') : ''}${esc(T.relDue(c.meeting))}</span><span class="sub">${meetWord(c)}: ${esc(fmtDate(c.meeting))}</span>`;
+  /* A megbeszélés után (dokumentálandó, teendők) az elmúlt alkalom nem határidő, és nem késés */
+  if (c.meeting && !c.due) return `${sr('Határidő: ')}<span class="main">nincs határidő</span><span class="sub">${meetWord(c)}: ${esc(fmtDate(c.meeting))}</span>`;
   if (!dt) return `${sr('Határidő: ')}<span class="main">nincs határidő</span>`;
   const lbl = c.type === 'vizsgalat' && !c.data.appointment ? 'időablak vége' : c.type === 'vizsgalat' ? 'időpont' : c.type === 'labor' ? 'várható eredmény' : c.type === 'engedely' && c.step === 'erv' ? 'lejár' : '';
   const rel = T.relDue(dt), abs = fmtDate(dt), same = rel === abs;
@@ -201,13 +249,16 @@ function dueCell(it) {
 function whatSub(it) {
   const c = it.c;
   if (it.kind === 'task') {
-    const t = it.t, parts = ['Teendő'];
+    /* A teendő ügye a cím fölött áll (kinHtml); az alsorban a teendő maga: ki viszi, ki adta (K4.11) */
+    const t = it.t, parts = ['Teendő'], hdr = c && T.caseAccess(c) === 'header';
     if (t.note) parts.push('„' + esc(t.note) + '”');
-    if (c && T.caseAccess(c) === 'header') parts.push(esc(T.commonType(c)) + ' (' + esc(c.closed ? 'lezárt' : T.catWord[T.cat(c)]) + ', csak fejléc)');
-    else if (c) parts.push(esc(T.isMeet(c.type) ? typeName(c) + (c.meeting ? ', ' + fmtDate(c.meeting) : '') : T.caseTitle(c)));
-    if (c && !T.isMember(T.me(), c.profileId)) parts.push(esc(T.profileName(c.profileId)));
-    if (t.created && t.created.by !== T.me()) parts.push('adta: ' + nw(userName(t.created.by)));
+    if (c && !hdr && !T.isMember(T.me(), c.profileId)) parts.push(esc(T.profileName(c.profileId)));
+    if (t.owner && t.owner !== T.me() && !it.deputyOf) parts.push('felelős: ' + nw(userName(t.owner)));
+    if (t.created && t.created.by !== T.me() && t.created.by !== t.owner) parts.push('adta: ' + nw(userName(t.created.by)));
     if (!t.owner) parts.push('<strong>felelős nélkül</strong>');
+    /* A jelölés a teendőn; a visszavonás 10 másodpercében a visszavonás sora mondja ki, ezért ott nem ismétlődik */
+    const sp = t.spawned && !ui.undo[it.key] ? T.Cs(t.spawned) : null;
+    if (sp && detailAcc(T.caseAccess(sp))) parts.push((t.done ? 'kapcsolt ügy lett belőle: ' : 'kapcsolt ügy indult belőle: ') + `<a href="#/ugy/${sp.id}">${esc(T.caseTitle(sp))}</a>`);
     return parts.join(' · ');
   }
   const parts = [esc(typeName(c)), c.closed ? 'lezárva: ' + esc(c.closed.reason) : esc(T.stepLabel(c))];
@@ -231,16 +282,25 @@ function rowHtml(it, opts) {
   if (ui.undo[key]) act = undoHtml(key);
   else if (it.kind === 'task' && T.taskAccess(it.t) !== 'write') act = `<span class="muted">csak olvasható</span>`;
   else if (it.kind !== 'task' && T.caseAccess(c) !== 'write') act = `<span class="muted">csak olvasható</span>`;
-  else if (it.kind === 'task') act = `<button class="btn-sm" type="button" data-act="task-done" data-id="${it.t.id}" data-key="${esc(key)}" data-k="act:${esc(key)}">${ico('check')}Kész${sr(': ' + title + (p ? ', ' + ptName(p) : ''))}</button>`;
+  else if (it.kind === 'task') act = taskActions(it.t, key, title, p);
   else act = caseActions(c, key, 'sm');
   const dep = it.deputyOf ? `<span class="deputy">helyettesként, ${esc(userName(it.deputyOf))} helyett</span>` : '';
+  /* A cím fölött a teendő ügye, illetve a kapcsolt ügy kiinduló ügye; a kiinduló ügy sorában a lenyitható lista, alapból csukva */
+  const kin = it.kind === 'task' ? (c ? kinHtml(c, T.caseAccess(c)) : '') : originKin(c), k = it.kind === 'case' ? kidsParts(c, key, false) : null;
   return `<li class="row${it.late && !closed ? ' is-late' : ''}${closed ? ' is-done' : ''}">
     <div class="cell-due">${dueCell(it)}</div>
     <div class="cell-pt">${sr('Beteg: ')}${ptLink(p)}${p ? `<span class="pt-id">${ptIdLine(p)}</span>` : ''}</div>
-    <div class="cell-what"><a class="what-title" href="${href}">${esc(title)}</a><span class="sub">${whatSub(it)}</span>${dep}</div>
+    <div class="cell-what">${kin}<a class="what-title" href="${href}">${esc(title)}</a>${subWithKids(whatSub(it), k)}${k ? k.list : ''}${dep}</div>
     <div class="cell-act">${act}</div>
-    ${c && !opts.noPrompt ? promptHtml(c, key) : ''}
+    ${c && !opts.noPrompt ? promptHtml(c, key) : ''}${it.kind === 'task' ? spawnPanel(it.t, key) : ''}
   </li>`;
+}
+/* A teendő sorában a „Kész” az egyetlen látható gomb; mellette a menüben a „Kapcsolt ügy indítása ebből a teendőből…” (a terv 3.4) */
+function taskActions(t, key, title, p) {
+  const done = `<button class="btn-sm" type="button" data-act="task-done" data-id="${t.id}" data-key="${esc(key)}" data-k="act:${esc(key)}">${ico('check')}Kész${sr(': ' + title + (p ? ', ' + ptName(p) : ''))}</button>`;
+  if (t.spawned) return `<div class="act-pair">${done}</div>`;
+  return `<div class="act-pair">${done}<details class="menu"><summary class="btn-sm btn-icon" data-k="tmenu:${esc(key)}">${ico('chev')}${sr('A teendő menüje: ' + title)}</summary>
+    <ul class="menu-list"><li><button type="button" data-act="spawn-open" data-id="${t.id}" data-key="${esc(key)}">Kapcsolt ügy indítása ebből a teendőből…</button></li></ul></details></div>`;
 }
 function rowsBlock(id, title, items, opts) {
   opts = opts || {};
@@ -401,7 +461,7 @@ function vSajat() {
   const deps = L.deps.length ? `<p class="note-line">${ico('inbox')} Helyettesítesz: ${L.deps.map(d => esc(userName(d))).join(', ')} nyitott tételei is itt állnak.</p>` : '';
   let h = `<div class="page-head"><div><h1 tabindex="-1" data-k="h1">${esc(ui.title)}</h1><p class="lede">${lede(L)}</p>${pendingLine()}
     ${abs ? `<p class="note-line">Távollét: ${esc(fmtDate(abs.from))} – ${esc(fmtDate(abs.to))} · helyettes: ${esc(userName(abs.deputy))} · <button class="link-btn lg" type="button" data-act="absence-clear">Törlés</button></p>` : ''}${deps}</div>
-    <div class="head-actions">${newCaseMenu(null)}${u.doctor && !abs ? `<button class="btn btn-quiet" type="button" data-act="panel" data-panel="absence" data-k="absence">Távollét és helyettes</button>` : ''}</div></div>`;
+    <div class="head-actions">${newCaseMenu(null)}${u.profile && !abs ? `<button class="btn btn-quiet" type="button" data-act="panel" data-panel="absence" data-k="absence">Távollét és helyettes</button>` : ''}</div></div>`;
   h += panelHtml();
   h += T.remindersFor(uid).map(reminderHtml).join('');
   if (L.fromDuty.length) h += `<section class="group from-duty" aria-labelledby="h-ugyelettol"><div class="group-head"><h2 class="group-title" id="h-ugyelettol">${ico('inbox')} Az ügyelet hagyta <span class="count">${L.fromDuty.length}</span></h2><span class="sort">az osztálynak; aki átveszi, a neve rögzül</span></div>
@@ -462,10 +522,17 @@ function assignedHtml(list) {
   return `<section class="group" aria-labelledby="h-kiutalt"><h2 class="group-title" id="h-kiutalt">Kiutalva az ügyeletnek <span class="count">${list.length}</span></h2>
     ${list.length ? `<ul class="side-list">${items}</ul>` : '<p class="empty">Most nincs kiutalt tételed.</p>'}</section>`;
 }
+/* Az „Új ügy” menü: a megbeszélések az „Esetmegbeszélés” csoportban, mindegyik a sorozata napjával (CT, 2026-11-19: a radiológiai konzílium
+   és a D2T-megbeszélés is esetmegbeszélés, csak más-más megbeszélésre) */
 function newCaseMenu(pid) {
   const u = T.U(T.me()), menu = cfg.newMenu[u.profile] || [];
   if (!menu.length) return '';
-  const items = menu.map(m => `<li><button type="button" data-act="new-case" data-type="${m[0]}"${pid ? ` data-pid="${pid}"` : ''}>${esc(m[1])}${m[2] ? `<span class="msub">${esc(m[2])}</span>` : ''}</button></li>`).join('');
+  const li = (m, sub) => `<li><button type="button" data-act="new-case" data-type="${m[0]}"${pid ? ` data-pid="${pid}"` : ''}>${esc(m[1])}${sub ? `<span class="msub">${esc(sub)}</span>` : ''}</button></li>`;
+  const isM = m => T.isMeet(m[0]) && cfg.series[m[0]], first = menu.findIndex(isM), meets = menu.filter(isM), gid = 'nm-meet-' + (pid || 'x');
+  const sched = m => { const S = cfg.series[m[0]]; return everyWord(S.every) + ', ' + DAY_ON[S.dow]; };
+  const group = meets.length ? `${first > 0 ? '<li class="sep" aria-hidden="true"></li>' : ''}<li class="mgroup"><p class="mhead" id="${gid}">Esetmegbeszélés</p><ul aria-labelledby="${gid}">${meets.map(m => li(m, sched(m))).join('')}</ul></li>` : '';
+  const rest = menu.filter(m => !isM(m)), before = first > -1 ? rest.filter(m => menu.indexOf(m) < first) : rest, after = first > -1 ? rest.filter(m => menu.indexOf(m) > first) : [];
+  const items = before.map(m => li(m, m[2])).join('') + group + (meets.length && after.length ? '<li class="sep" aria-hidden="true"></li>' : '') + after.map(m => li(m, m[2])).join('');
   return `<details class="menu"><summary class="btn ${pid ? 'btn-primary' : 'btn-quiet'}" data-k="new-case">${ico('plus')}Új ügy${ico('chev')}</summary><ul class="menu-list${pid ? ' left' : ''}">${items}</ul></details>`;
 }
 
@@ -477,9 +544,143 @@ const inArea = name => `<textarea class="textarea" id="f-${name}" data-f="${name
 function inSelect(name, opts, blank) { return `<select class="select" id="f-${name}" data-f="${name}" data-k="f-${name}">${blank ? `<option value="">${esc(blank)}</option>` : ''}${opts.map(o => `<option value="${esc(o[0])}">${esc(o[1])}</option>`).join('')}</select>`; }
 function chipsF(name, legend, opts, opt) { return `<fieldset class="field"><legend>${esc(legend)}${opt ? ' <span class="opt" style="font-weight:400">(nem kötelező)</span>' : ''}</legend><div class="chips">${opts.map(o => `<label class="chip"><input type="radio" name="c-${name}" value="${esc(o[0])}" data-f="${name}"><span>${esc(o[1])}</span></label>`).join('')}</div></fieldset>`; }
 const yesNo = [['igen', 'igen'], ['nem', 'nem']];
-/* Személyválasztó: mindig üres sorral indul, előre kiválasztott ember nélkül; kötelező mezőnél a hiba a mezőnél jelenik meg (CT kérése) */
-function personField(name, label, opts, placeholder, err, optional) {
-  return `<div class="field"><label class="field-label" for="f-${name}">${esc(label)}${optional ? ' <span class="opt">(nem kötelező)</span>' : ''}</label><select class="select" id="f-${name}" data-f="${name}" data-k="f-${name}"${err ? ` aria-describedby="${name}-err" aria-invalid="true"` : ''}><option value="">${esc(placeholder)}</option>${opts.map(o => `<option value="${esc(o[0])}">${esc(o[1])}</option>`).join('')}</select>${err ? `<p class="err" id="${name}-err" role="alert">${ico('alert')}<span>${esc(err)}</span></p>` : ''}</div>`;
+/* ---------------- Személyválasztó: kereshető, legördülő lista (K4.8; CT kérése, 2026-11-19) ----------------
+   Akadálymentes combobox (WAI-ARIA 1.2, listás kiegészítés): gépeléskor névre, szerepkörre és áreára szűr, az első találat kijelölve;
+   nyíl, Enter és Esc; a lista a nyílgombbal vagy kattintásra is lenyílik. Előre senki nincs kiválasztva; kötelező mezőnél a hiba a mezőnél.
+   Ahol több ember választható, a választottak eltávolítható címkeként látszanak a mező fölött.
+   Az állapot a ui.f-ben: egy választásnál az azonosító (üres: senki), többnél a lista; a beírt, még nem választott szöveg a „_q:” kulcson.
+   Gépelés közben csak a lista rajzolódik újra; választáskor az egész nézet (a mentőgomb kimondja a következményt). */
+const cbNameKey = n => String(n || '').replace(/^dr\.\s*/i, '');
+const byName = (a, b) => cbNameKey(a.name).localeCompare(cbNameKey(b.name), 'hu');
+/* Egy munkatárs a listán: név, alatta a szerepkör és az áreái; a keresés mindegyikre szűr */
+function personOpt(uid, pre) {
+  const u = T.U(uid), prof = u.profile, ar = prof ? (cfg.areaOrder[prof] || []).map(a => cfg.areas[a]).filter(a => a.members.indexOf(uid) > -1 || a.owner === uid || a.deputy === uid).map(a => a.name) : [];
+  const sub = [pre, u.role, ar.join(', ')].filter(Boolean).join(' · ');
+  return { v: uid, name: u.name, sub, hay: T.norm([u.name, u.role, ar.join(' '), pre || ''].join(' ')) };
+}
+/* A választható emberek névsorban; az elöl állók (például az área helyettese) a sorrendjükben, jelölve */
+function people(uids, first) {
+  first = first || [];
+  const head = first.map(x => personOpt(x[0], x[1])), rest = uids.filter(k => !first.some(x => x[0] === k)).map(k => personOpt(k)).sort(byName);
+  return head.concat(rest);
+}
+const profPeople = (prof, except, onlyDoctors) => people(Object.keys(cfg.users).filter(k => cfg.users[k].profile === prof && (!onlyDoctors || cfg.users[k].doctor) && (except || []).indexOf(k) === -1));
+function cbPath(key) { const m = /^rows\.(\d+)\.(\w+)$/.exec(key); return m ? { obj: (ui.f.rows || [])[Number(m[1])], k: m[2] } : { obj: ui.f, k: key }; }
+function cbVal(key) { const p = cbPath(key); return p.obj ? p.obj[p.k] : undefined; }
+function cbSet(key, v) { const p = cbPath(key); if (p.obj) p.obj[p.k] = v; }
+function cbQ(key, v) { if (v === undefined) return ui.f['_q:' + key] || ''; if (v) ui.f['_q:' + key] = v; else delete ui.f['_q:' + key]; }
+const cbSel = (spec, key) => { const v = cbVal(key); return spec.multi ? (Array.isArray(v) ? v.filter(Boolean) : []) : (v || ''); };
+function cbName(spec, v) { const o = spec.opts.find(x => x.v === v); return o ? o.name : userName(v); }
+/* A szűrés: minden beírt szó eleje illeszkedjen a név, a szerepkör vagy egy área nevének valamelyik szavára (ékezet nélkül is) */
+function cbMatch(o, q) {
+  const toks = T.norm(q).split(/[^a-z0-9]+/).filter(Boolean); if (!toks.length) return true;
+  const words = o.hay.split(/[^a-z0-9]+/).filter(Boolean);
+  return toks.every(t => words.some(w => w.indexOf(t) === 0));
+}
+function cbVisible(spec, q) {
+  const list = spec.opts.filter(o => cbMatch(o, q));
+  if (!q.trim() && !spec.multi && spec.empty) list.unshift({ v: '', name: spec.empty, sub: '', none: true });
+  return list;
+}
+function cbActive(spec, vis) {
+  if (!vis.length) return null;
+  let i = ui.cb.act === null || ui.cb.act === undefined ? -1 : vis.findIndex(o => o.v === ui.cb.act);
+  if (i < 0) i = 0;
+  ui.cb.act = vis[i].v;
+  return { i, id: spec.id + '-o-' + i };
+}
+function cbOptHtml(spec, o, i, act, sel) {
+  const on = spec.multi ? sel.indexOf(o.v) > -1 : o.v === sel;
+  return `<li class="cb-opt${i === act ? ' is-act' : ''}${o.none ? ' is-none' : ''}" id="${spec.id}-o-${i}" role="option" aria-selected="${on}" data-cb-opt="${esc(spec.key)}" data-v="${esc(o.v)}"><span class="cb-text"><span class="cb-name">${esc(o.name)}</span>${o.sub ? `<span class="cb-sub">${esc(o.sub)}</span>` : ''}</span><span class="cb-check" aria-hidden="true">${on ? ico('check') : ''}</span></li>`;
+}
+/* spec: key (a ui.f kulcsa), id, label, opts (people), multi, placeholder, empty (az üres választás neve, ha van), err, errKey, optional, hint, wide */
+function cbField(spec) {
+  ui.cbSpec[spec.key] = spec;
+  const key = spec.key, id = spec.id, sel = cbSel(spec, key), q = cbQ(key), err = spec.err || ui.f['_cbE:' + key] || '';
+  const open = !!(ui.cb && ui.cb.key === key), vis = open ? cbVisible(spec, q) : [], act = open ? cbActive(spec, vis) : null;
+  const text = spec.multi ? q : (q || (sel ? cbName(spec, sel) : ''));
+  const desc = [spec.hint ? id + '-h' : '', err ? id + '-err' : ''].filter(Boolean).join(' '), shown = open && vis.length > 0;
+  const tags = spec.multi && sel.length ? `<ul class="labels cb-tags" aria-label="${esc(spec.label)}: kiválasztva">${sel.map(v => `<li><span class="label"><span class="cb-tag">${esc(cbName(spec, v))}</span><button class="link-btn cb-x" type="button" data-cb-del="${esc(key)}" data-v="${esc(v)}" data-k="cbx:${esc(id)}:${esc(v)}">${ico('x')}${sr('Eltávolítás: ' + cbName(spec, v))}</button></span></li>`).join('')}</ul>` : '';
+  return `<div class="field cb${spec.multi ? ' cb-multi' : ''}${spec.wide ? ' wide' : ''}" data-cb-wrap="${esc(key)}">
+    <label class="field-label" id="${id}-l" for="${id}">${esc(spec.label)}${spec.optional ? ' <span class="opt">(nem kötelező)</span>' : ''}</label>${spec.hint ? `<span class="field-hint" id="${id}-h">${esc(spec.hint)}</span>` : ''}${tags}
+    <div class="cb-box"><input class="text-input cb-input" type="text" id="${id}" data-cb="${esc(key)}" data-k="${id}" role="combobox" aria-autocomplete="list" aria-expanded="${shown}" aria-controls="${id}-lb"${act ? ` aria-activedescendant="${act.id}"` : ''} autocomplete="off" spellcheck="false" placeholder="${esc(spec.placeholder)}" value="${esc(text)}"${desc ? ` aria-describedby="${desc}"` : ''}${err ? ' aria-invalid="true"' : ''}>
+      <button class="cb-btn" type="button" tabindex="-1" data-cb-toggle="${esc(key)}" aria-label="${esc(spec.label)}: a lista" aria-expanded="${shown}" aria-controls="${id}-lb">${ico('chev')}</button>
+      <ul class="cb-list" id="${id}-lb" role="listbox" aria-labelledby="${id}-l"${spec.multi ? ' aria-multiselectable="true"' : ''}${shown ? '' : ' hidden'}>${vis.map((o, i) => cbOptHtml(spec, o, i, act ? act.i : -1, sel)).join('')}</ul></div>
+    <p class="cb-none"${open && !vis.length ? '' : ' hidden'}>${esc(spec.none || 'Nincs ilyen munkatárs a listán. Próbáld a név vagy a szerepkör elejével.')}</p>
+    <p class="sr-only" id="${id}-st" aria-live="polite"></p>
+    ${err ? `<p class="err" id="${id}-err" role="alert">${ico('alert')}<span>${esc(err)}</span></p>` : ''}</div>`;
+}
+/* Gépelés és nyílbillentyű közben csak a lista rajzolódik újra, a mező és a fókusz a helyén marad */
+function cbPaint(key) {
+  const spec = ui.cbSpec[key], wrap = document.querySelector('[data-cb-wrap="' + CSS.escape(key) + '"]'); if (!spec || !wrap) return;
+  const input = wrap.querySelector('input[data-cb]'), lb = wrap.querySelector('.cb-list'), btn = wrap.querySelector('[data-cb-toggle]'), none = wrap.querySelector('.cb-none'), live = wrap.querySelector('[aria-live]');
+  const open = !!(ui.cb && ui.cb.key === key), sel = cbSel(spec, key), vis = open ? cbVisible(spec, cbQ(key)) : [], act = open ? cbActive(spec, vis) : null, shown = open && vis.length > 0;
+  lb.innerHTML = vis.map((o, i) => cbOptHtml(spec, o, i, act ? act.i : -1, sel)).join('');
+  lb.hidden = !shown; none.hidden = !(open && !vis.length);
+  input.setAttribute('aria-expanded', String(shown)); btn.setAttribute('aria-expanded', String(shown));
+  if (act) input.setAttribute('aria-activedescendant', act.id); else input.removeAttribute('aria-activedescendant');
+  if (open) { const t = vis.length ? vis.length + ' találat' : 'Nincs találat'; if (live.textContent !== t) live.textContent = t; }
+  if (act) { const li = document.getElementById(act.id); if (li) li.scrollIntoView({ block: 'nearest' }); }
+}
+function cbOpen(key, last) {
+  const spec = ui.cbSpec[key]; if (!spec) return;
+  const vis = cbVisible(spec, cbQ(key));
+  ui.cb = { key, act: last ? (vis.length ? vis[vis.length - 1].v : null) : (!spec.multi && !cbQ(key) ? cbSel(spec, key) : null) };
+  cbPaint(key);
+}
+function cbClose(key) { if (ui.cb && ui.cb.key === key) { ui.cb = null; cbPaint(key); } }
+function cbMove(key, d) {
+  const spec = ui.cbSpec[key], vis = cbVisible(spec, cbQ(key)); if (!vis.length) return;
+  let i = vis.findIndex(o => o.v === ui.cb.act); i = i < 0 ? 0 : Math.max(0, Math.min(vis.length - 1, i + d));
+  ui.cb.act = vis[i].v; cbPaint(key);
+}
+function cbFocusEnd(id) { const el = document.getElementById(id); if (el && el.setSelectionRange) { const n = el.value.length; try { el.setSelectionRange(n, n); } catch (e) { /* nem szöveg */ } } }
+function cbSay(id, msg) { setTimeout(() => { const s = document.getElementById(id + '-st'); if (s) s.textContent = msg; }, 80); }
+/* Választás: a lista bezárul (többes választásnál is, hogy ne takarja el a mentőgombot; a következő névhez elég gépelni);
+   a többesnél a választott címkeként jelenik meg, a már választott újra választva kikerül; a hiba a választással eltűnik */
+function cbPick(key, v) {
+  const spec = ui.cbSpec[key]; if (!spec) return;
+  delete ui.f['_cbE:' + key]; if (spec.errKey) ui.f[spec.errKey] = '';
+  let msg = '';
+  if (spec.multi) {
+    const cur = cbSel(spec, key).slice(), i = cur.indexOf(v);
+    if (i > -1) cur.splice(i, 1); else cur.push(v);
+    cbSet(key, cur); cbQ(key, ''); ui.cb = null; msg = (i > -1 ? 'Eltávolítva: ' : 'Hozzáadva: ') + cbName(spec, v);
+  } else { cbSet(key, v); cbQ(key, ''); ui.cb = null; }
+  ui.focus = spec.id; renderMain(); cbFocusEnd(spec.id);
+  if (msg) cbSay(spec.id, msg);
+}
+/* A címke eltávolítása: a fókusz a szomszéd címkére, ennek híján a mezőre kerül */
+function cbRemove(key, v) {
+  const spec = ui.cbSpec[key]; if (!spec) return;
+  const cur = cbSel(spec, key), i = cur.indexOf(v), next = cur[i + 1] || cur[i - 1];
+  cbSet(key, cur.filter(x => x !== v)); ui.cb = null;
+  ui.focus = next ? 'cbx:' + spec.id + ':' + next : spec.id; renderMain();
+  cbSay(spec.id, 'Eltávolítva: ' + cbName(spec, v));
+}
+function cbInput(el) {
+  const key = el.getAttribute('data-cb'), spec = ui.cbSpec[key]; if (!spec) return;
+  let rerender = false;
+  if (!spec.multi) { const v = cbSel(spec, key); if (v && el.value !== cbName(spec, v)) { cbSet(key, ''); rerender = true; } }
+  cbQ(key, el.value.trim() ? el.value : '');
+  ui.cb = { key, act: null };
+  if (rerender) renderMain(); else cbPaint(key);
+  clearTimeout(saveUiDraft.tm); saveUiDraft.tm = setTimeout(saveUiDraft, 300);
+}
+/* Mentés előtt: ha a mezőben beírt, de a listából nem választott szöveg áll, a hiba a mezőnél jelenik meg, és nem ment el semmi */
+function cbCheck(form) {
+  let first = null;
+  form.querySelectorAll('input[data-cb]').forEach(el => { const key = el.getAttribute('data-cb'); if (cbQ(key).trim()) { ui.f['_cbE:' + key] = 'Válaszd ki a nevet a listából, vagy töröld a beírt szöveget.'; if (!first) first = el.id; } });
+  if (!first) return true;
+  ui.cb = null; ui.focus = first; renderMain(); return false;
+}
+/* Egy ember választható: kulcs, felirat, emberek, helyőrző, hiba, nem kötelező; az „extra” a többi beállítás (üres választás neve, hibakulcs, súgó) */
+function personField(name, label, opts, placeholder, err, optional, extra) {
+  return cbField(Object.assign({ key: name, id: 'f-' + name, label, opts, placeholder, err, optional }, extra || {}));
+}
+/* Több ember választható: a választottak címkeként a mező fölött */
+function peopleField(name, label, opts, placeholder, optional, extra) {
+  return cbField(Object.assign({ key: name, id: 'f-' + name, label, opts, placeholder, optional, multi: true }, extra || {}));
 }
 /* Részeshatározó rag a névhez: „dr. Vázlat Viktornak”, „Naptár Nórának”, „dr. Ideg Imrének” */
 function dative(name) {
@@ -511,8 +712,6 @@ function ncOwners(p, f) {
   if (f.owner === 'none') return [];
   return ao ? [ao] : [];
 }
-function doctorsOf(profileId) { return Object.keys(cfg.users).filter(k => cfg.users[k].profile === profileId && cfg.users[k].doctor).map(k => [k, cfg.users[k].name]); }
-function staffOf(profileId) { return Object.keys(cfg.users).filter(k => cfg.users[k].profile === profileId).map(k => [k, cfg.users[k].name + ' (' + cfg.users[k].role + ')']); }
 function whenOptions(kind) {
   const n = T.now(), t = today(), tm = D.add(t, 1);
   const cand = kind === 'ward' ? [D.at(t, '08:00'), D.at(t, '10:00'), D.at(t, '14:00'), D.at(tm, '08:00'), D.at(tm, '10:00'), D.at(tm, '14:00')]
@@ -541,16 +740,17 @@ function ownerChips(type, prof, uid) {
   const opts = [];
   if (area && area.owner && area.owner !== uid) opts.push(['area', userName(area.owner) + ' (az área felelőse)']);
   opts.push(['me', 'én'], ['other', 'más'], ['none', 'egyelőre senki']);
-  return chipsF('owner', 'Felelős', opts, true) + (f.owner === 'other' ? personField('ownerId', 'Ki?', staffOf(prof).filter(x => x[0] !== uid), 'Válaszd ki, kinek adod', f._eOwner) : '')
+  return chipsF('owner', 'Felelős', opts, true) + (f.owner === 'other' ? personField('ownerId', 'Ki?', profPeople(prof, [uid]), 'Írd be a nevét', f._eOwner, false, { errKey: '_eOwner' }) : '')
     + `<p class="field-hint" style="margin-top:.375rem">${area && area.owner ? 'Ha nem választasz, az área felelőse viszi: ' + esc(userName(area.owner)) + '.' : 'Ennek az áreának nincs alapértelmezett felelőse; ha nem választasz, az ügy a munkalistán a „Felelős nélkül” részben áll.'}</p>`;
 }
-/* A változat plusz adatai az új ügy űrlapján (nem kötelezők) */
+/* A változat plusz adatai az új ügy űrlapján (nem kötelezők); az archivált mező új ügynél már nem jelenik meg */
+const plusLive = (prof, type) => plusOf(prof, type).filter(x => !x.archived);
 function plusFields(prof, type) {
-  return plusOf(prof, type).map(x => x.kind === 'yn' ? chipsF(x.id, x.label, yesNo, true)
+  return plusLive(prof, type).map(x => x.kind === 'yn' ? chipsF(x.id, x.label, yesNo, true)
     : x.kind === 'list' ? field(x.id, x.label, inSelect(x.id, (x.opts || []).map(o => [o, o]), 'nincs megadva'), true)
     : field(x.id, x.label, inText(x.id), true)).join('');
 }
-function plusData(prof, type, f) { const o = {}; plusOf(prof, type).forEach(x => { o[x.id] = x.kind === 'yn' ? (f[x.id] === 'igen' ? true : f[x.id] === 'nem' ? false : undefined) : (f[x.id] || ''); }); return o; }
+function plusData(prof, type, f) { const o = {}; plusLive(prof, type).forEach(x => { o[x.id] = x.kind === 'yn' ? (f[x.id] === 'igen' ? true : f[x.id] === 'nem' ? false : undefined) : (f[x.id] || ''); }); return o; }
 function newCasePanel(p) {
   const f = ui.f, uid = T.me(), u = T.U(uid), prof = u.profile, type = p.type, pt = p.pid ? T.P(p.pid) : null;
   const tname = (cfg.newMenu[prof].find(m => m[0] === type) || [type, cfg.types[type].name])[1];
@@ -565,7 +765,7 @@ function newCasePanel(p) {
       ${ownerChips(type, prof, uid)}${u.doctor ? '<p class="hint">Kérő orvosként figyelőként követed; külön értesítést nem kapsz.</p>' : ''}${appearance}`;
   } else if (type === 'labor') {
     if (f.requestedOn === undefined) f.requestedOn = today();
-    body += `<div class="fields-2">${field('test', 'Vizsgálat', inText('test'), true)}${field('notify', 'Kinek kell jelezni', inSelect('notify', doctorsOf(prof), 'senkinek külön'), true)}
+    body += `<div class="fields-2">${field('test', 'Vizsgálat', inText('test'), true)}${personField('notify', 'Kinek kell jelezni', profPeople(prof, [], true), 'Írd be a nevét', null, true, { empty: 'senkinek külön' })}
       ${field('requestedOn', 'A kérés napja', inDate('requestedOn'), true)}${field('expectedOn', 'Várható eredmény', inDate('expectedOn'), true)}</div>
       ${field('his', 'HIS-hivatkozás a kérésre', inText('his'), true)}
       ${ownerChips(type, prof, uid)}${appearance}`;
@@ -581,17 +781,17 @@ function newCasePanel(p) {
   } else if (T.isMeet(type)) {
     const sk = cfg.types[type].meeting, m = T.nextMeeting(sk), d2t = T.flowOf(type) === 'd2t';
     const others = pt ? T.state().cases.filter(c => c.patientId === pt.id && c.type !== type && T.caseAccess(c) === 'write').map(c => [c.id, T.caseTitle(c) + ' (' + typeName(c) + ')']) : [];
-    if (f.meeting === undefined) f.meeting = m;
-    const dlm = T.meetingDeadline(sk, f.meeting), lateRep = D.mins(T.now()) > D.mins(dlm);
-    body += `${field('meeting', 'Alkalom', inSelect('meeting', T.meetingsAhead(sk, 4).map(x => [x, D.dayName(x) + ', ' + fmtDate(x)])))}<p class="hint" style="margin-top:.5rem">Bejelentési határidő: ${esc(T.relAt(dlm))}${lateRep ? ' (lejárt; az eset így is a napirendre kerül)' : ''}. Hiányosan is mentheted; a napirenden látszik, mi hiányzik.</p>
+    /* A napirendről indítva az alkalom előre kitöltve (K5.11) */
+    if (f.meeting === undefined) f.meeting = p.meeting && meetDates(sk).indexOf(p.meeting) > -1 ? p.meeting : m;
+    body += `${meetingChooser('meeting', sk, 'Hiányosan is mentheted; a napirenden látszik, mi hiányzik.')}
       ${field('question', 'Kérdés', inText('question'))}${!d2t ? field('region', 'Régió vagy terület', inText('region')) : field('due', 'Határidő', inDate('due'), true)}
       ${field('summary', 'Rövid összefoglaló', inArea('summary'))}${field('his', d2t ? 'HIS-hivatkozás' : 'HIS-hivatkozás a felvételre', inText('his'))}
-      ${d2t ? `<fieldset class="field"><legend>Felelős orvosok <span class="opt" style="font-weight:400">(nem kötelező; ha senkit nem jelölsz, egyelőre senki)</span></legend><div class="chips">${doctorsOf(prof).map(d => `<label class="check" style="margin:0 1.25rem 0 0"><input type="checkbox" value="${d[0]}" data-f="owners" data-multi="1" data-k="owners-${d[0]}"><span>${esc(d[1])}</span></label>`).join('')}</div></fieldset>` : ''}
+      ${d2t ? peopleField('owners', 'Felelős orvosok', profPeople(prof, [], true), 'Írd be a nevét', true, { hint: 'Egy vagy több; ha senkit nem választasz, egyelőre senki.' }) : ''}
       ${others.length ? field('link', 'Hivatkozás egy másik ügyre', inSelect('link', others, 'nincs'), true) : ''}`;
   } else if (type === 'atadas') {
     body += `<div class="fields-2">${field('institution', 'Fogadó intézmény', inText('institution'), true)}${field('recvDoctor', 'Fogadó orvos', inText('recvDoctor'), true)}
       ${field('contact', 'Intézményi elérhetőség', inText('contact'), true)}${field('plannedOn', 'Tervezett nap', inDate('plannedOn'), true)}</div>
-      ${personField('coordinator', 'Tranzíciós koordinátor', doctorsOf(prof), 'Válaszd ki a koordinátort', null, true)}<p class="field-hint" style="margin-top:.375rem">Ha üresen hagyod, az área felelőse lesz: ${esc(userName((cfg.areas[cfg.defaultArea[prof].atadas] || {}).owner || uid))}.</p>`;
+      ${(ao => personField('coordinator', 'Tranzíciós koordinátor', profPeople(prof, [], true), 'Írd be a nevét', null, true, { empty: 'az área felelőse: ' + ao }) + `<p class="field-hint" style="margin-top:.375rem">Ha üresen hagyod, az área felelőse lesz: ${esc(ao)}.</p>`)(userName((cfg.areas[cfg.defaultArea[prof].atadas] || {}).owner || uid))}`;
   } else if (cfg.types[type].custom) {
     /* A profil saját ügytípusa (K4.17): a közös adatok, a lépései a kategóriájuk szerint működnek */
     const t = cfg.types[type];
@@ -602,7 +802,7 @@ function newCasePanel(p) {
     const late = f.owner === 'duty';
     body += `${field('what', 'Mit kell tenni?', inText('what', ' maxlength="160"'))}
       ${chipsF('owner', 'Kinek?', [['me', 'nekem'], ['duty', 'az ügyeletnek'], ['other', 'másnak'], ['none', 'egyelőre senkinek']])}
-      ${f.owner === 'other' ? personField('ownerId', 'Ki?', staffOf(prof).filter(x => x[0] !== uid), 'Válaszd ki, kinek adod', f._eOwner) : ''}
+      ${f.owner === 'other' ? personField('ownerId', 'Ki?', profPeople(prof, [uid]), 'Írd be a nevét', f._eOwner, false, { errKey: '_eOwner' }) : ''}
       ${late ? whenField('when', whenOptions('duty'), false) : field('due', 'Határidő', inDate('due'), true)}
       ${late ? '<p class="hint">A címzett az ügyelet, nem egy név; a tétel az ügyeleti listára kerül.</p>' : ''}`;
   }
@@ -611,6 +811,36 @@ function newCasePanel(p) {
     <h2 id="nc-title" tabindex="-1" data-k="panel-h">Új ügy: ${esc(tname)}</h2><p class="panel-note">Csak a beteg és az ügytípus kötelező; minden más később is kitölthető.</p>
     ${body}${ui.f._err ? `<p class="err" role="alert">${ico('alert')}<span>${esc(ui.f._err)}</span></p>` : ''}
     <div class="form-actions"><button class="btn btn-primary" type="submit" data-k="nc-save">${ico(ncOwners(p, f) === null ? 'send' : 'check')}${esc(consequenceLabel(ncOwners(p, f)))}</button><button class="btn btn-quiet" type="button" data-act="panel-close">Mégse</button></div></form></section>`;
+}
+/* A megbeszélés alkalma (K5.10; CT, 2026-11-19): a felület kimondja, hogy a sorozat alkalmait kínálja; a legközelebbi négy egy kattintással,
+   bármelyik későbbi a „későbbi alkalom” listájából, egy évre előre (például egy három hónap múlva esedékes MR utáni konzílium).
+   Minden alkalom mellett, hány eset van már rajta; alatta a választott alkalom bejelentési határideje. A mintája a határidő „más időpont” választója. */
+const MEET_MONTHS = 12;
+/* Az alkalom esetei: ami rajta van, a még meg nem tartott alkalom előtt visszavontak nélkül */
+function meetCount(sk, d) { return T.state().cases.filter(c => c.type === sk && c.meeting === d && !(c.closed && c.closed.at.slice(0, 10) < d)).length; }
+const meetLabel = (sk, d) => fmtDate(d) + ', ' + D.dayName(d) + ' (' + meetCount(sk, d) + ' eset)';
+function meetDates(sk) {
+  const S = cfg.series[sk]; if (!S) return [];
+  const end = D.addMonths(today(), MEET_MONTHS), out = []; let d = T.nextMeeting(sk);
+  while (d <= end && out.length < 60) { out.push(d); d = D.add(d, 7 * (S.every || 1)); }
+  return out;
+}
+const monthOf = iso => D.full(iso).split(' ').slice(0, 2).join(' ');
+function meetingChooser(key, sk, note, wide) {
+  const f = ui.f, S = cfg.series[sk], all = meetDates(sk), near = all.slice(0, 4), later = all.slice(4), cur = f[key];
+  /* A meglévő ügy már elmúlt alkalma is látszik, a sajátjaként */
+  const own = cur && all.indexOf(cur) === -1 ? cur : null, ck = key + 'Chip', lk = key + 'Later';
+  f[ck] = near.indexOf(cur) > -1 || cur === own ? cur : later.indexOf(cur) > -1 ? 'later' : '';
+  if (f[ck] === 'later') f[lk] = cur; else if (later.indexOf(f[lk]) === -1) f[lk] = later[0] || '';
+  const dl = cur ? T.meetingDeadline(sk, cur) : null, past = dl && D.mins(T.now()) > D.mins(dl);
+  const chip = (v, label, i) => `<label class="chip"><input type="radio" name="c-${ck}" value="${esc(v)}" data-f="${ck}" data-meet="${key}" data-rerender="1"${i === 0 ? ` data-k="${ck}-first"` : ''}><span>${esc(label)}</span></label>`;
+  const months = []; later.forEach(d => { const m = monthOf(d); let g = months.find(x => x[0] === m); if (!g) months.push(g = [m, []]); g[1].push(d); });
+  const vn = vlabel(S.profile, sk), nm = /^.[a-záéíóöőúüű]/.test(vn) ? vn.charAt(0).toLowerCase() + vn.slice(1) : vn;
+  return `<fieldset class="field meet-pick${wide ? ' wide' : ''}" aria-describedby="${key}-mh${dl ? ' ' + key + '-dl' : ''}"><legend>Alkalom</legend>
+    <p class="field-hint" id="${key}-mh">${esc(cap(art(nm)) + ' ' + nm)} alkalmai, ${esc(everyWord(S.every))} ${esc(DAY_ON[S.dow])}: a legközelebbi négy, és egy évre előre bármelyik későbbi. Zárójelben, hány eset van már rajta.</p>
+    <div class="chips">${(own ? [chip(own, meetLabel(sk, own), 0)] : []).concat(near.map((d, i) => chip(d, meetLabel(sk, d), own ? 1 : i))).join('')}${later.length ? chip('later', 'későbbi alkalom', 1) : ''}</div>
+    ${f[ck] === 'later' ? `<div class="field meet-later"><label class="field-label" for="f-${lk}">Melyik későbbi alkalom?</label><select class="select" id="f-${lk}" data-f="${lk}" data-meet="${key}" data-rerender="1" data-k="f-${lk}">${months.map(g => `<optgroup label="${esc(g[0])}">${g[1].map(d => `<option value="${d}">${esc(meetLabel(sk, d))}</option>`).join('')}</optgroup>`).join('')}</select></div>` : ''}
+    ${dl ? `<p class="hint meet-dl" id="${key}-dl">Bejelentési határidő: ${esc(T.relAt(dl))}${past ? ' (lejárt; az eset így is a napirendre kerül)' : ''}.${note ? ' ' + esc(note) : ''}</p>` : ''}</fieldset>`;
 }
 /* A határidő gyorsválasztói mellett tetszőleges nap és idő is megadható (bírálat 22.); a hibák a képernyőolvasóhoz is eljutnak (25.) */
 function whenField(prefix, opts, optional) {
@@ -665,20 +895,20 @@ function wardPanel(p) {
       <dt>Mit</dt><dd id="prev-wmit"${f.wmit ? '' : ' class="empty-val"'}>${f.wmit ? '„' + esc(f.wmit) + '”' : '(még üres)'}</dd>
       <dt>Mikorra</dt><dd${w && w !== 'hiányos' ? '' : ' class="empty-val"'}>${w && w !== 'hiányos' ? esc(T.relAt(w)) : 'nincs határidő'}</dd></dl></div></section>`;
 }
-/* A távollét helyettese: az orvosok közül; akinek az áreáján helyettes van beállítva, annál ő áll elöl, jelölve (K2.3, K5.17) */
+/* A távollét helyettese: a profil bármelyik tagja, mert az área felelőse és helyettese is bármelyik szerepkörből lehet (K2.3, K5.17; a prototípus bírálata, 9.);
+   akinek az áreáján helyettes van beállítva, annál ő áll elöl, jelölve, de nincs kiválasztva */
 function absenceDeputies(u) {
-  const me = T.me(), docs = doctorsOf(u.profile).filter(d => d[0] !== me);
-  const ad = (cfg.areaOrder[u.profile] || []).map(a => cfg.areas[a]).filter(a => a.owner === me && a.deputy && a.deputy !== me);
-  const first = docs.filter(d => ad.some(a => a.deputy === d[0])).map(d => [d[0], d[1] + ' (az área helyettese: ' + ad.filter(a => a.deputy === d[0]).map(a => a.name).join(', ') + ')']);
-  return first.concat(docs.filter(d => !first.some(x => x[0] === d[0])));
+  const me = T.me(), ad = (cfg.areaOrder[u.profile] || []).map(a => cfg.areas[a]).filter(a => a.owner === me && a.deputy && a.deputy !== me && T.U(a.deputy).profile === u.profile);
+  const first = T.membersOf(u.profile).filter(k => k !== me && ad.some(a => a.deputy === k)).map(k => [k, 'az área helyettese: ' + ad.filter(a => a.deputy === k).map(a => a.name).join(', ')]);
+  return people(T.membersOf(u.profile).filter(k => k !== me), first);
 }
 function absencePanel() {
   const f = ui.f, u = T.U(T.me());
   if (f.afrom === undefined) f.afrom = today();
   return `<section class="panel" aria-labelledby="ab-title"><form data-form="absence" novalidate><h2 id="ab-title" tabindex="-1" data-k="panel-h">Távollét és helyettes</h2>
-    <p class="panel-note">A távollét alatt a nyitott tételeid a helyettes „Saját ügyeim” listáján is látszanak, áthelyezés nélkül.</p>
+    <p class="panel-note">A távollét alatt a nyitott tételeid a helyettesed listáján is látszanak, áthelyezés nélkül.</p>
     <div class="fields-2">${field('afrom', 'Mettől', inDate('afrom'))}${field('ato', 'Meddig', inDate('ato'))}</div>
-    ${personField('adep', 'Helyettes', absenceDeputies(u), 'Válaszd ki, ki helyettesít', f._eDep)}
+    ${personField('adep', 'Helyettes', absenceDeputies(u), 'Írd be a nevét', f._eDep, false, { errKey: '_eDep' })}
     ${f._err ? `<p class="err" role="alert">${ico('alert')}<span>${esc(f._err)}</span></p>` : ''}
     <div class="form-actions"><button class="btn btn-primary" type="submit" data-k="ab-save">Mentés</button><button class="btn btn-quiet" type="button" data-act="panel-close">Mégse</button></div></form></section>`;
 }
@@ -867,26 +1097,33 @@ function agendaHtml(area) {
   const list = meetsIn(area); if (!list.length) return '<p class="empty">Ebben az áreában most nincs megbeszélés.</p>';
   const type = list.indexOf(ui.r.q.mb) > -1 ? ui.r.q.mb : list[0], sk = type, S = cfg.series[sk], mq = list.length > 1 ? '&mb=' + type : '';
   const cs = T.state().cases.filter(c => c.type === type && c.meeting && T.caseAccess(c) === 'write' && (!c.closed || ui.undo['case:' + c.id] || c.closed.at.slice(0, 10) === today()));
-  const dates = Array.from(new Set(cs.filter(c => c.meeting >= today() || !c.closed).map(c => c.meeting))).sort();
+  /* Az alkalmak: amelyeken eset van, és a sorozat legközelebbi négy alkalma, hogy a még üres alkalomra is fel lehessen venni esetet (K5.11) */
+  const dates = Array.from(new Set(cs.filter(c => c.meeting >= today() || !c.closed).map(c => c.meeting).concat(T.meetingsAhead(sk, 4)))).sort();
   const sel = ui.r.q.alkalom && dates.indexOf(ui.r.q.alkalom) > -1 ? ui.r.q.alkalom : dates.find(d => d >= today()) || dates[dates.length - 1] || T.nextMeeting(sk);
   const items = cs.filter(c => c.meeting === sel);
   const dl = T.meetingDeadline(sk, sel), past = D.mins(T.now()) > D.mins(dl);
   const one = c => {
-    const p = T.P(c.patientId), miss = T.missingFields(c), key = 'case:' + c.id;
+    const p = T.P(c.patientId), miss = T.missingFields(c), key = 'case:' + c.id, k = kidsParts(c, key, false), hasMiss = miss.length > 0 && !c.closed;
     const acts = ui.undo[key] ? undoHtml(key) : c.closed ? `<span class="muted">${ico('check')}lezárva: ${esc(c.closed.reason)}</span>` : (c.triage === 'tudomásul'
       ? `<button class="btn-sm" type="button" data-act="ack" data-id="${c.id}" data-k="act:${key}">Tudomásul vettük</button><button class="btn-sm" type="button" data-act="triage" data-id="${c.id}" data-val="megbeszéljük">Mégis megbeszéljük</button>`
       : `${c.decision ? `<a class="btn-sm" href="#/ugy/${c.id}">A döntés és a teendők</a>` : `${c.step === 'nap' ? `<button class="btn-sm" type="button" data-act="step" data-id="${c.id}" data-to="dok" data-key="${esc(key)}">Megbeszéltük</button>` : ''}<a class="btn-sm btn-fill" href="#/ugy/${c.id}?dontes=1" data-k="act:${key}">Döntés rögzítése…</a>`}<button class="btn-sm" type="button" data-act="triage" data-id="${c.id}" data-val="tudomásul">Csak tudomásul vesszük</button>`);
     return `<li class="row"><div class="cell-due">${sr('Bejelentette: ')}<span class="main">${esc(userName(c.owners[0] || c.created.by))}</span><span class="sub">${esc(T.relAt(c.created.at))}</span></div>
       <div class="cell-pt">${sr('Beteg: ')}${ptLink(p)}<span class="pt-id">${ptIdLine(p)}</span></div>
-      <div class="cell-what"><a class="what-title" href="#/ugy/${c.id}">${esc(T.caseTitle(c))}</a><span class="sub">${esc(c.data.region || '')}${c.data.region ? ' · ' : ''}${esc(T.stepLabel(c))}${(c.his || []).length ? ' · HIS: ' + esc(c.his.map(x => x.ref).join(', ')) : ''}${(c.files || []).length ? ' · ' + c.files.length + ' csatolmány' : ''}</span>
-        ${miss.length && !c.closed ? `<span class="sub"><strong class="late">${ico('alert')} Hiányzik: ${esc(miss.join(', '))}</strong></span>` : ''}</div>
+      <div class="cell-what">${originKin(c)}<a class="what-title" href="#/ugy/${c.id}">${esc(T.caseTitle(c))}</a>${subWithKids(`${esc(c.data.region || '')}${c.data.region ? ' · ' : ''}${esc(T.stepLabel(c))}${(c.his || []).length ? ' · HIS: ' + esc(c.his.map(x => x.ref).join(', ')) : ''}${(c.files || []).length ? ' · ' + c.files.length + ' csatolmány' : ''}`, hasMiss ? null : k)}
+        ${hasMiss ? `<span class="sub"><strong class="late">${ico('alert')} Hiányzik: ${esc(miss.join(', '))}</strong></span>${k ? k.btn : ''}` : ''}${k ? k.list : ''}</div>
       <div class="cell-act"><div class="act-pair">${acts}</div></div></li>`;
   };
   const disc = items.filter(c => c.triage !== 'tudomásul'), ack = items.filter(c => c.triage === 'tudomásul');
-  return `<div class="section" style="margin-top:2rem">${list.length > 1 ? `<ul class="seg" aria-label="Megbeszélések" style="margin:0 0 1.25rem">${list.map(k => `<li><a href="#/munkalistak/${area}/napirend?mb=${k}"${k === type ? ' aria-current="page"' : ''}>${esc(cfg.series[k].name)}</a></li>`).join('')}</ul>` : ''}<p class="lede"><strong>${esc(cap(D.dayName(sel)))}, ${esc(fmtDate(sel))}</strong> · ${esc(S.name)} · bejelentési határidő: ${esc(T.relAt(dl))}${past ? ' (lejárt; a napirend összeállt)' : ''}</p>
-    ${S.participants.length ? `<p class="note-line">Résztvevők: ${S.participants.map(x => esc(userName(x))).join(', ')}</p>` : ''}
+  /* Új eset a napirendről, erre az alkalomra (K5.11; CT, 2026-11-19): az új ügy űrlapja helyben nyílik, az alkalom előre kitöltve */
+  const np = ui.panel && ui.panel.kind === 'new-case' && ui.panel.from === 'agenda' ? ui.panel : null;
+  const canNew = sel >= today() && (cfg.newMenu[T.U(T.me()).profile] || []).some(m => m[0] === type);
+  const newBtn = canNew && !np ? `<button class="btn btn-secondary" type="button" data-act="agenda-new" data-type="${type}" data-meeting="${sel}" data-k="agenda-new">${ico('plus')}Új eset erre az alkalomra</button>` : '';
+  return `<div class="section" style="margin-top:2rem">${list.length > 1 ? `<ul class="seg" aria-label="Megbeszélések" style="margin:0 0 1.25rem">${list.map(k => `<li><a href="#/munkalistak/${area}/napirend?mb=${k}"${k === type ? ' aria-current="page"' : ''}>${esc(cfg.series[k].name)}</a></li>`).join('')}</ul>` : ''}
+    <div class="agenda-top"><div><p class="lede"><strong>${esc(cap(D.dayName(sel)))}, ${esc(fmtDate(sel))}</strong> · ${esc(S.name)} · bejelentési határidő: ${esc(T.relAt(dl))}${past ? ' (lejárt; a napirend összeállt)' : ''}</p>
+    ${S.participants.length ? `<p class="note-line">Résztvevők: ${S.participants.map(x => esc(userName(x))).join(', ')}</p>` : ''}</div>${newBtn ? `<div class="head-actions">${newBtn}</div>` : ''}</div>
     ${dates.length > 1 ? `<ul class="seg" aria-label="Alkalmak">${dates.map(d => `<li><a href="#/munkalistak/${area}/napirend?alkalom=${d}${mq}"${d === sel ? ' aria-current="page"' : ''}>${esc(fmtDate(d))}</a></li>`).join('')}</ul>` : ''}
-    <p class="note-line">A napirendet senkinek nem kell összeállítania: a bejelentett esetekből magától áll össze. A hiányos bejelentés is rajta van, a hiány jelölésével.</p></div>
+    <p class="note-line">A napirendet senkinek nem kell összeállítania: a bejelentett esetekből magától áll össze. A hiányos bejelentés is rajta van, a hiány jelölésével.</p>
+    ${np ? newCasePanel(np) : ''}</div>
     <section class="group" aria-labelledby="h-meg" style="margin-top:2.5rem"><div class="group-head"><h2 class="group-title" id="h-meg">Megbeszéljük <span class="count">${disc.length}</span></h2></div>
     ${disc.length ? `<div class="cols" aria-hidden="true"><span>Bejelentő</span><span>Beteg</span><span>Kérdés</span><span></span></div><ul class="rows">${disc.map(one).join('')}</ul>` : '<p class="empty">Erre az alkalomra még nincs megbeszélendő eset.</p>'}</section>
     <section class="group" aria-labelledby="h-tud"><div class="group-head"><h2 class="group-title" id="h-tud">Csak tudomásul vesszük <span class="count">${ack.length}</span></h2></div>
@@ -906,13 +1143,13 @@ function vArchivum() {
   const labels = T.usedLabels();
   const row = r => {
     const c = r.c, p = c.patientId ? T.P(c.patientId) : null, detail = r.acc === 'write' || r.acc === 'read';
-    const when = c.closed ? c.closed.at.slice(0, 10) : c.created.at.slice(0, 10);
+    const when = c.closed ? c.closed.at.slice(0, 10) : c.created.at.slice(0, 10), k = detail ? kidsParts(c, 'arch:' + c.id, false) : null;
     const status = c.closed ? 'lezárva: ' + c.closed.reason : T.stepLabel(c) + ' (' + T.catWord[T.cat(c)] + ')';
     return `<li class="row"><div class="cell-due"><span class="main">${esc(fmtDate(when))}</span><span class="sub">${c.closed ? 'lezárva' : 'indult'}</span></div>
       <div class="cell-pt">${sr('Beteg: ')}${ptLink(p)}${p ? `<span class="pt-id"><span class="taj">${esc(T.patientId(p))}</span></span>` : ''}</div>
-      <div class="cell-what">${detail ? `<a class="what-title" href="#/ugy/${c.id}">${esc(T.caseTitle(c))}</a>` : `<span class="what-title">${esc(T.commonType(c))}</span>`}
-        <span class="sub">${esc(detail ? typeName(c) : T.commonType(c))} · ${esc(detail ? status : (c.closed ? 'lezárt' : T.catWord[T.cat(c)]))} · ${esc(T.profileName(c.profileId))}${detail && c.files.length ? ' · ' + ico('file') + ' ' + c.files.map(x => esc(x.name)).join(', ') : ''}${detail && c.labels.length ? ' · ' + ico('tag') + ' ' + c.labels.map(esc).join(', ') : ''}${!detail ? ' · csak fejléc (más profil betege)' : ''}</span>
-        ${detail && c.decision ? `<span class="sub">Döntés: „${esc(c.decision)}”</span>` : ''}</div><div class="cell-act"></div></li>`;
+      <div class="cell-what">${detail ? originKin(c) + `<a class="what-title" href="#/ugy/${c.id}">${esc(T.caseTitle(c))}</a>` : `<span class="what-title">${esc(T.commonType(c))}</span>`}
+        ${subWithKids(`${esc(detail ? typeName(c) : T.commonType(c))} · ${esc(detail ? status : (c.closed ? 'lezárt' : T.catWord[T.cat(c)]))} · ${esc(T.profileName(c.profileId))}${detail && c.files.length ? ' · ' + ico('file') + ' ' + c.files.map(x => esc(x.name)).join(', ') : ''}${detail && c.labels.length ? ' · ' + ico('tag') + ' ' + c.labels.map(esc).join(', ') : ''}${!detail ? ' · csak fejléc (más profil betege)' : ''}`, detail && c.decision ? null : k)}
+        ${detail && c.decision ? subWithKids(`Döntés: „${esc(c.decision)}”`, k) : ''}${k ? k.list : ''}</div><div class="cell-act"></div></li>`;
   };
   const drow = y => { const p = y.patientId ? T.P(y.patientId) : null;
     return `<li class="row"><div class="cell-due"><span class="main">${esc(fmtDate((y.closed ? y.closed.at : y.at).slice(0, 10)))}</span><span class="sub">${y.closed ? 'lezárva' : 'nyitott'}</span></div>
@@ -962,7 +1199,7 @@ function kvHtml(c, full) {
   if (c.type === 'atadas') { add('Fogadó intézmény', esc(d.institution)); add('Fogadó orvos', esc(d.recvDoctor)); add('Elérhetőség', esc(d.contact)); add('Tervezett nap', esc(fmtDate(d.plannedOn))); add('Koordinátor', d.coordinator ? esc(userName(d.coordinator)) : ''); add('Átadó dokumentum', d.docReady ? 'elkészült' : 'még nincs kész');
     const before = c.contacts.filter(x => !x.after).length, after = c.contacts.filter(x => x.after).length; add('Kapcsolatfelvétel', `${before} az átadás előtt, ${after} utána`); }
   if (T.isMeet(c.type)) { add('Alkalom', c.meeting ? esc(D.dayName(c.meeting) + ', ' + fmtDate(c.meeting)) : ''); add('Régió', esc(d.region)); if (c.due) add('Határidő', esc(fmtDate(c.due))); const miss = T.missingFields(c); if (miss.length && !c.closed) add('Hiányzik', esc(miss.join(', ')), 'miss'); }
-  plusOf(c.profileId, c.type).forEach(x => add(x.label, x.kind === 'yn' ? (d[x.id] === true ? 'igen' : d[x.id] === false ? (x.id === 'ortho' ? 'nincs' : 'nem') : '') : esc(d[x.id])));
+  plusOf(c.profileId, c.type).forEach(x => add(x.label, x.kind === 'yn' ? (d[x.id] === true ? 'igen' : d[x.id] === false ? 'nem' : '') : esc(d[x.id])));
   if (c.type === 'altalanos' && c.due) add('Határidő', esc(fmtDate(c.due)));
   add('HIS-hivatkozás', (c.his || []).map(x => esc(x.ref) + ' <span class="muted">(' + esc(x.kind) + ')</span>').join(', '));
   if (c.patientId) add('Indult', esc(c.startedAs) + ' ellátásban');
@@ -977,8 +1214,9 @@ function caseBlock(c, acc) {
   else { const dt = T.caseDate(c); if (dt) due = `<p class="case-due${late ? ' is-late' : ''}">${late ? ico('alert') : ''}${esc(c.type === 'engedely' && c.step === 'erv' ? 'lejár: ' + fmtDate(dt) : T.relDue(dt))}</p>`; }
   return `<article class="case${c.closed ? ' is-done' : ''}${acc === 'read' ? ' is-ro' : ''}" aria-labelledby="cs-${c.id}">
     <div class="case-top"><p class="case-kind">${esc(kindLine(c))}${acc === 'read' ? ' · ' + esc(T.profileName(c.profileId)) : ''}</p>${due}</div>
-    <h4 class="case-title" id="cs-${c.id}"><a href="#/ugy/${c.id}">${esc(T.caseTitle(c))}</a></h4>
+    ${originKin(c)}<h4 class="case-title" id="cs-${c.id}"><a href="#/ugy/${c.id}">${esc(T.caseTitle(c))}</a></h4>
     ${trackHtml(c)}${kvHtml(c, false)}
+    ${kidsHtml(c, key, true)}
     ${acc === 'write' ? `<div class="case-actions">${caseActions(c, key, 'lg')}</div>${promptHtml(c, key)}` : ''}
   </article>`;
 }
@@ -1011,15 +1249,16 @@ function vBeteg(pid) {
     <h1 id="beteg" tabindex="-1" data-k="h1">${esc(p.name || T.patientId(p))}</h1>
     <p class="ident-id">${p.name ? ident : (own ? `<span class="muted">Név még nincs megadva</span> · <button class="link-btn lg" type="button" data-act="panel" data-panel="name" data-pid="${pid}">Név megadása</button>` : '')}${p.age ? ' · ' + p.age + ' éves' : ''}</p>
     <p class="ident-status">${stateChip}</p>${admUndo}</div>
-    <div class="ident-actions">${actions}</div></div>
-    <dl class="strip">${g ? `<div><dt>Gondozás</dt><dd>${esc(T.profileName(g.profileId))}, ${esc(fmtDate(g.since))} óta${g.ended ? ' · lezárva: ' + esc(g.ended.reason) + ', ' + esc(fmtDate(g.ended.on)) : ''}</dd></div><div><dt>Kezelőorvos</dt><dd>${g.doctor ? esc(userName(g.doctor)) : '<span class="muted">még nincs megadva</span>'}</dd></div><div><dt>Fő diagnózis</dt><dd>${g.dx ? esc(g.dx) : '<span class="muted">még nincs megadva</span>'}</dd></div>`
+    <div class="ident-actions">${actions}</div></div></section>`;
+  /* A gondozás sávja a bal hasáb tetején áll, az ügyek fölött; így nem lóg az ügyeleti tételek fölé, és a jobb hasáb a sávval egy magasságban indul (CT, 2026-11-19) */
+  const strip = `<dl class="strip">${g ? `<div><dt>Gondozás</dt><dd>${esc(T.profileName(g.profileId))}, ${esc(fmtDate(g.since))} óta${g.ended ? ' · lezárva: ' + esc(g.ended.reason) + ', ' + esc(fmtDate(g.ended.on)) : ''}</dd></div><div><dt>Kezelőorvos</dt><dd>${g.doctor ? esc(userName(g.doctor)) : '<span class="muted">még nincs megadva</span>'}</dd></div><div><dt>Fő diagnózis</dt><dd>${g.dx ? esc(g.dx) : '<span class="muted">még nincs megadva</span>'}</dd></div>`
       : `<div><dt>Gondozás</dt><dd>${esc(gAll.map(x => T.profileName(x.profileId)).join(', '))} (más profil)</dd></div><div><dt>Kezelőorvos</dt><dd class="muted">a gondozó profilnál</dd></div><div><dt>Fő diagnózis</dt><dd class="muted">a gondozó profilnál</dd></div>`}
-      <div><dt>Nyitott ügyek</dt><dd>${nOpen}${nWait ? ', ebből ' + nWait + ' várakozik' : ''}</dd></div></dl></section>`;
+      <div><dt>Nyitott ügyek</dt><dd>${nOpen}${nWait ? ', ebből ' + nWait + ' várakozik' : ''}</dd></div></dl>`;
   if (!p.taj && own) h += `<p class="note-line">${ico('alert')} TAJ még nincs: ideiglenes azonosítóval ugyanúgy dolgozhatsz; ha megvan a TAJ, írd be ide.</p>`;
   h += panelHtml();
   if (!own) h += `<div class="ro-banner">${ico('lock')}<div><p><strong>Csak olvasható.</strong> ${adm ? 'A beteg most bent fekszik, ezért a nyitott ügyeit és teendőit olvashatod; szerkeszteni a gondozó profil tudja.' : 'A beteg most nem fekszik bent, ezért más profil ügyeiből csak a fejlécet látod: ügytípus, státusz, dátum, felelős profil.'}</p><p class="sub">${esc(gAll.map(x => T.profileName(x.profileId)).join(', '))} betege. A megnyitás a naplóba kerül.</p></div></div>`;
   const grp = (title, list, empty) => `<h3 class="sub-head">${esc(title)}</h3><div class="grp">${list.length ? list.map(x => caseBlock(x.c, x.a)).join('') : `<p class="grp-empty">${empty}</p>`}</div>`;
-  h += `<div class="layout wide-side"><div class="primary">`;
+  h += `<div class="layout wide-side card-layout"><div class="primary">${strip}`;
   if (own || openC.length) h += `<section class="group" aria-labelledby="h-nyitott"><h2 class="group-title" id="h-nyitott" tabindex="-1">Nyitott ügyek <span class="count">${openC.length}</span></h2>
     ${grp('Ezen dolgozz!', working, 'Most nincs ilyen ügy.')}${grp('Kire várunk?', waiting, 'Most senkire nem várunk.')}</section>`;
   if (done.length) h += `<section class="group" aria-labelledby="h-kesz"><h2 class="group-title" id="h-kesz">Kész, még él <span class="count">${done.length}</span></h2><p class="group-note">Érvényes engedélyek a lejáratig, átadott beteg az utólagos kapcsolatfelvételig.</p>${done.map(x => caseBlock(x.c, x.a)).join('')}</section>`;
@@ -1038,13 +1277,18 @@ function patientDutyHtml(pid, own) {
   if (!own) { if (!T.openAdmission(pid)) return ''; L.to = L.to.filter(y => !y.closed); L.from = L.from.filter(y => !y.closed); }
   const item = y => { const key = 'duty:' + y.id; return `<li class="duty-item${ui.undo[key] && !y.closed ? ' is-new' : ''}"><p class="duty-title">„${esc(y.text)}”</p><p class="duty-meta">${y.dir === 'from' ? 'Az ügyelet hagyta: ' + esc(userName(y.by)) + ' · ' + esc(T.profileName(y.profileId)) + ' osztályának' : 'Kiutalta: ' + esc(userName(y.by))}${y.due ? ' · mikorra: ' + esc(T.relAt(y.due)) : ''}</p>${dutyFlow(y)}${ui.undo[key] ? undoHtml(key) : ''}
     ${y.dir === 'from' && !y.closed && !ui.undo[key] && T.isMember(T.me(), y.profileId) && !dutyCtx() ? `<div class="case-actions" style="margin-top:.75rem">${y.accepted ? `<button class="btn-sm btn-fill" type="button" data-act="duty-close" data-id="${y.id}">${ico('check')}Lezárás</button>` : `<button class="btn-sm btn-fill" type="button" data-act="duty-accept" data-id="${y.id}">Átveszem</button>`}</div>` : ''}</li>`; };
-  return `<section class="group" aria-labelledby="h-ugyelet"><h2 class="group-title" id="h-ugyelet">Ügyeleti tételek <span class="count">${L.to.length + L.from.length}</span></h2>
+  /* Az ügyeleti tételek saját, halvány lapon: a klinikai ügyelettel közös munka, külön a profil ügyeitől (CT, 2026-11-19) */
+  return `<section class="group duty-box" aria-labelledby="h-ugyelet"><h2 class="group-title" id="h-ugyelet">Ügyeleti tételek <span class="count">${L.to.length + L.from.length}</span></h2>
     <h3 class="duty-dir">${ico('send')} Kiutalva az ügyeletnek</h3>${L.to.length ? `<ul class="duty">${L.to.map(item).join('')}</ul>` : '<p class="grp-empty">Nincs.</p>'}
     <h3 class="duty-dir">${ico('inbox')} Az ügyelettől az osztálynak</h3>${L.from.length ? `<ul class="duty">${L.from.map(item).join('')}</ul>` : '<p class="grp-empty">Nincs.</p>'}</section>`;
 }
 function historyHtml(pid, vis, own) {
   const ev = [];
-  vis.forEach(x => { if (x.a === 'header') return; ev.push({ at: x.c.created.at, li: `<li${x.c.closed ? ' class="closed"' : ''}><span class="t-dot" aria-hidden="true"></span><p class="t-date">${esc(fmtDate(x.c.created.at.slice(0, 10)))}</p><p class="t-title"><a href="#/ugy/${x.c.id}">${esc(T.caseTitle(x.c))}</a></p><p class="t-meta">${esc(typeName(x.c))} · ${esc(T.profileName(x.c.profileId))} · ${x.c.closed ? 'lezárva: ' + esc(x.c.closed.reason) : 'nyitott'}${x.c.decision ? ' · döntés: ' + esc(x.c.decision) : ''}</p></li>` }); });
+  /* A bejegyzés alatt: honnan indult, illetve a kézzel kapcsolt ügy (K4.11) */
+  const relName = o => detailAcc(o.acc) ? `<a href="#/ugy/${o.c.id}">${esc(shortName(o.c))}</a>` : esc(hdrText(o.c));
+  const rels = c => { const o = T.originOf(c), peers = T.linkedOf(c).filter(l => l.rel.kind === 'kapcsolodik');
+    return (o ? `<p class="t-meta">Innen indult: ${relName(o)}</p>` : '') + peers.map(l => `<p class="t-meta">Kapcsolódik: ${relName(l)}</p>`).join(''); };
+  vis.forEach(x => { if (x.a === 'header') return; ev.push({ at: x.c.created.at, li: `<li${x.c.closed ? ' class="closed"' : ''}><span class="t-dot" aria-hidden="true"></span><p class="t-date">${esc(fmtDate(x.c.created.at.slice(0, 10)))}</p><p class="t-title"><a href="#/ugy/${x.c.id}">${esc(T.caseTitle(x.c))}</a></p><p class="t-meta">${esc(typeName(x.c))} · ${esc(T.profileName(x.c.profileId))} · ${x.c.closed ? 'lezárva: ' + esc(x.c.closed.reason) : 'nyitott'}${x.c.decision ? ' · döntés: ' + esc(x.c.decision) : ''}</p>${rels(x.c)}</li>` }); });
   T.state().appearances.filter(a => a.patientId === pid && (own ? T.isMember(T.me(), a.profileId) : false)).forEach(a => ev.push({ at: a.start + 'T00:00', li: `<li class="visit"><span class="t-dot" aria-hidden="true"></span><p class="t-date">${esc(fmtDate(a.start))}${a.end ? ' – ' + esc(fmtDate(a.end)) : ''}</p><p class="t-title">${a.kind === 'adm' ? 'Felvétel' : 'Ambuláns vizit'}</p><p class="t-meta">Megjelenés · ${esc(a.place)} · ${a.kind === 'adm' ? (a.end ? 'hazabocsátva' : 'bent fekszik') : 'a feladattal együtt rögzítve'}</p></li>` }));
   T.caresOf(pid).filter(g => own && T.isMember(T.me(), g.profileId)).forEach(g => { ev.push({ at: g.since + 'T00:00', li: `<li class="closed"><span class="t-dot" aria-hidden="true"></span><p class="t-date">${esc(fmtDate(g.since))}</p><p class="t-title">A gondozás kezdete</p><p class="t-meta">${esc(T.profileName(g.profileId))}${g.doctor ? ' · kezelőorvos: ' + esc(userName(g.doctor)) : ''}</p></li>` }); if (g.ended) ev.push({ at: g.ended.on + 'T23:59', li: `<li class="closed"><span class="t-dot" aria-hidden="true"></span><p class="t-date">${esc(fmtDate(g.ended.on))}</p><p class="t-title">A gondozás vége</p><p class="t-meta">${esc(T.profileName(g.profileId))} · ${esc(g.ended.reason)}</p></li>` }); });
   ev.sort((a, b) => (b.at > a.at ? 1 : -1));
@@ -1078,7 +1322,7 @@ function vUgy(cid) {
   let h = crumbs + ptLine + `<div class="case-page"><p class="kicker">${esc(kindLine(c))} · ${esc(T.profileName(c.profileId))}${write ? '' : ' · <span class="ro">csak olvasható</span>'}</p>
     <h1 class="case-title-h1" tabindex="-1" data-k="h1">${esc(T.caseTitle(c))}</h1>
     <p class="case-state"><strong>${esc(catw)}</strong>${!c.closed && T.cat(c) === 'V' ? '<span>vár: ' + esc(c.type === 'atadas' ? (c.data.institution || '').split(',')[0] : (T.stepDef(c) || {}).wait || '') + ', ' + esc(T.waitLen(c.waitSince || today())) + '</span>' : ''}${T.permitExpired(c) ? `<span class="late">${ico('alert')} ${D.diff(today(), c.data.expiresOn)} napja lejárt, és nem indult hosszabbítás</span>` : ''}</p>
-    ${trackHtml(c)}
+    ${originLine(c)}${trackHtml(c)}
     ${write ? `<div class="case-actions">${caseActions(c, key, 'lg')}${extraBtns.join('')}</div>${promptHtml(c, key)}` : `<div class="ro-banner">${ico('lock')}<div><p><strong>Csak olvasható.</strong> A beteg most bent fekszik, ezért a nyitott ügyét olvashatod; szerkeszteni a gondozó profil tudja (${esc(T.profileName(c.profileId))}).</p></div></div>`}
     ${panelHtml()}
     <div class="layout wide-side"><div class="primary">`;
@@ -1086,39 +1330,47 @@ function vUgy(cid) {
   if (T.isMeet(c.type)) h += decisionSection(c, write);
   if (c.type === 'atadas') { const perms = T.state().cases.filter(x => x.patientId === c.patientId && x.type === 'engedely' && x.step === 'erv' && !x.closed && x.data.expiresOn >= today() && T.caseAccess(x) !== 'none' && T.caseAccess(x) !== 'header');
     h += `<section class="section" aria-labelledby="h-perm"><div class="section-head"><h2 id="h-perm">A beteg érvényes engedélyei</h2></div>${perms.length ? `<ul class="plain-list">${perms.map(x => `<li><div class="li-main"><a href="#/ugy/${x.id}">${esc(T.caseTitle(x))}</a><span class="muted">érvényes ${esc(fmtDate(x.data.expiresOn))}-ig</span></div></li>`).join('')}</ul>` : '<p class="empty">Nincs érvényes engedély.</p>'}<p class="hint">Magától látszik, újbóli beírás nélkül.</p></section>`; }
-  h += tasksSection(c, write);
+  h += tasksSection(c, write) + linkedSection(c, write);
   if (c.type !== 'epi') h += contactsSection(c, write);
   h += noteSection(c, write) + filesSection(c, write) + labelsSection(c, write);
-  h += `</div><div class="side">${linksSection(c)}<section class="section" aria-labelledby="h-tort"><div class="section-head"><h2 id="h-tort">A lépések története <span class="count">${c.history.length}</span></h2></div>
+  h += `</div><div class="side"><section class="section" aria-labelledby="h-tort"><div class="section-head"><h2 id="h-tort">A lépések története <span class="count">${c.history.length}</span></h2></div>
     <p class="group-note">Magától rögzül, ki és mikor léptette; kézi napló nem kell.</p><ul class="history-list">${c.history.slice().reverse().map(x => `<li><time>${esc(fmtDate(x.at.slice(0, 10)))} ${esc(D.hm(x.at))}</time><span>${esc(x.text)}<br><span class="muted">${esc(userName(x.by))}</span></span></li>`).join('')}</ul></section></div></div></div>`;
   return h;
 }
 /* Az ügy szerkeszthető adatai: ugyanazok, amelyek induláskor megadhatók (bírálat 10.), a felelősök teljes listájával (4.) */
 const YN = v => v === true ? 'igen' : v === false ? 'nem' : '';
 const NY = v => v === 'igen' ? true : v === 'nem' ? false : undefined;
-function meetingOpts(c) { const list = T.meetingsAhead(T.typeOf(c).meeting, 4); if (c.meeting && list.indexOf(c.meeting) === -1) list.unshift(c.meeting); return list.map(x => [x, D.dayName(x) + ', ' + fmtDate(x)]); }
+/* A lista már nem kínálja, de a meglévő ügyön ez az érték áll: látszik, és változatlanul menthető (a prototípus bírálata, 5.) */
+const keepOpt = (opts, v) => v && !opts.some(o => o[0] === v) ? opts.concat([[v, v + ' (már nincs a listán)']]) : opts;
+/* A plusz adat, ha az ügyön ki van töltve: az archivált mező is (a prototípus bírálata, 6.) */
+const hasVal = (c, k) => c.data && c.data[k] !== undefined && c.data[k] !== null && c.data[k] !== '';
+const plusFor = c => plusOf(c.profileId, c.type).filter(x => !x.archived || hasVal(c, x.id));
 function editFields(c) {
   const prof = c.profileId;
-  const d = (k, label, type, opts) => ({ k, label, type: type || 'text', opts, get: x => x.data[k] == null ? '' : (typeof x.data[k] === 'boolean' ? YN(x.data[k]) : String(x.data[k])), put: (pt, v) => { pt.data[k] = type === 'yn' ? NY(v) : v; } });
+  const d = (k, label, type, opts, extra) => Object.assign({ k, label, type: type || 'text', opts, get: x => x.data[k] == null ? '' : (typeof x.data[k] === 'boolean' ? YN(x.data[k]) : String(x.data[k])), put: (pt, v) => { pt.data[k] = type === 'yn' ? NY(v) : v; } }, extra || {});
   const F = [];
-  if (c.type === 'engedely') F.push(d('drug', 'Gyógyszer'), d('indication', 'Indikáció'), d('reqType', 'Kérelemtípus', 'select', cfg.reqTypes.map(x => [x, x])), d('offLabel', 'Indikáción túli alkalmazás', 'yn'), d('sentOn', 'Beküldés napja', 'date'), d('ogyeiOn', 'OGYÉI-engedély napja', 'date'), d('decidedOn', 'Határozat napja', 'date'), d('expiresOn', 'Érvényes eddig', 'date'));
-  if (c.type === 'vizsgalat') F.push(d('exam', 'Vizsgálat', 'select', cfg.profiles[prof].exams.map(x => [x, x])), d('region', 'Régió'), d('from', 'Időablak: mettől', 'date'), d('to', 'Időablak: meddig', 'date'), d('anesthesia', 'Altatás', 'yn'), d('appointment', 'Időpont', 'date'));
-  if (c.type === 'labor') F.push(d('test', 'Vizsgálat'), d('requestedOn', 'A kérés napja', 'date'), d('expectedOn', 'Várható eredmény', 'date'), d('notify', 'Kinek kell jelezni', 'select', doctorsOf(prof)));
+  if (c.type === 'engedely') F.push(d('drug', 'Gyógyszer'), d('indication', 'Indikáció'), d('reqType', 'Kérelemtípus', 'select', keepOpt(cfg.reqTypes.map(x => [x, x]), c.data.reqType)), d('offLabel', 'Indikáción túli alkalmazás', 'yn'), d('sentOn', 'Beküldés napja', 'date'), d('ogyeiOn', 'OGYÉI-engedély napja', 'date'), d('decidedOn', 'Határozat napja', 'date'), d('expiresOn', 'Érvényes eddig', 'date'));
+  if (c.type === 'vizsgalat') F.push(d('exam', 'Vizsgálat', 'select', keepOpt(cfg.profiles[prof].exams.map(x => [x, x]), c.data.exam)), d('region', 'Régió'), d('from', 'Időablak: mettől', 'date'), d('to', 'Időablak: meddig', 'date'), d('anesthesia', 'Altatás', 'yn'), d('appointment', 'Időpont', 'date'));
+  if (c.type === 'labor') F.push(d('test', 'Vizsgálat'), d('requestedOn', 'A kérés napja', 'date'), d('expectedOn', 'Várható eredmény', 'date'), d('notify', 'Kinek kell jelezni', 'person', profPeople(prof, [], true), { empty: 'senkinek külön' }));
   if (T.isMeet(c.type)) {
     F.push(d('question', 'Kérdés')); if (T.flowOf(c.type) !== 'd2t') F.push(d('region', 'Régió vagy terület'));
     F.push(d('summary', 'Rövid összefoglaló', 'area'));
-    if (!c.closed) F.push({ k: 'meeting', label: 'Alkalom', type: 'select', opts: meetingOpts(c), get: x => x.meeting || '', put: (pt, v) => { pt.meeting = v; } });
+    if (!c.closed) F.push({ k: 'meeting', label: 'Alkalom', type: 'meeting', sk: T.typeOf(c).meeting, get: x => x.meeting || '', put: (pt, v) => { pt.meeting = v; } });
   }
-  if (c.type === 'atadas') F.push(d('institution', 'Fogadó intézmény'), d('recvDoctor', 'Fogadó orvos'), d('contact', 'Intézményi elérhetőség'), d('plannedOn', 'Tervezett nap', 'date'), d('coordinator', 'Tranzíciós koordinátor', 'select', doctorsOf(prof)), d('docReady', 'Az átadó dokumentum elkészült', 'yn'));
-  plusOf(prof, c.type).forEach(x => F.push(x.kind === 'yn' ? d(x.id, x.label, 'yn') : x.kind === 'list' ? d(x.id, x.label, 'select', (x.opts || []).map(o => [o, o])) : d(x.id, x.label)));
+  if (c.type === 'atadas') F.push(d('institution', 'Fogadó intézmény'), d('recvDoctor', 'Fogadó orvos'), d('contact', 'Intézményi elérhetőség'), d('plannedOn', 'Tervezett nap', 'date'), d('coordinator', 'Tranzíciós koordinátor', 'person', profPeople(prof, [], true), { empty: 'nincs megadva' }), d('docReady', 'Az átadó dokumentum elkészült', 'yn'));
+  plusFor(c).forEach(x => F.push(x.kind === 'yn' ? d(x.id, x.label, 'yn') : x.kind === 'list' ? d(x.id, x.label, 'select', keepOpt((x.opts || []).map(o => [o, o]), c.data[x.id])) : d(x.id, x.label)));
   if (c.type === 'altalanos') F.push({ k: 'title', label: 'Mit kell tenni?', type: 'text', get: x => x.title || '', put: (pt, v) => { pt.title = v; } });
   F.push({ k: 'due', label: 'Határidő', type: 'date', get: x => x.due || '', put: (pt, v) => { pt.due = v || null; } });
-  F.push({ k: 'owners', label: 'Felelős', type: 'multi', opts: staffOf(prof), get: x => x.owners.slice().sort().join(','), put: (pt, v) => { pt.owners = v ? v.split(',').filter(Boolean) : []; } });
+  F.push({ k: 'owners', label: 'Felelős', type: 'multi', opts: profPeople(prof), hint: 'Egy vagy több; ha üresen hagyod, az ügy felelős nélkül marad.', get: x => x.owners.slice().sort().join(','), put: (pt, v) => { pt.owners = v ? v.split(',').filter(Boolean) : []; } });
+  /* A figyelő követi az ügyet (K4.8): a „Figyelt ügyeim” között látja, ki viszi és mi változott */
+  F.push({ k: 'watchers', label: 'Figyelő', type: 'multi', opts: profPeople(prof), hint: 'Aki követi az ügyet: a „Figyelt ügyeim” között látja, ki viszi és mi változott.', get: x => x.watchers.slice().sort().join(','), put: (pt, v) => { pt.watchers = v ? v.split(',').filter(Boolean) : []; } });
   return F;
 }
 function fieldShow(x, v) {
   if (v === '' || v == null) return 'nincs megadva';
   if (x.type === 'multi') return v.split(',').map(userName).join(', ');
+  if (x.type === 'person') return userName(v);
+  if (x.type === 'meeting') return D.dayName(v) + ', ' + fmtDate(v);
   if (x.type === 'date') return fmtDate(v);
   if (x.type === 'select') { const o = (x.opts || []).find(o => o[0] === v); return o ? o[1] : v; }
   return v;
@@ -1128,9 +1380,11 @@ function editForm(c) {
   const f = ui.f, F = editFields(c);
   if (f._init !== c.id) { f._init = c.id; f._snap = {}; F.forEach(x => { const v = x.get(c); f._snap[x.k] = v; f['e_' + x.k] = x.type === 'multi' ? (v ? v.split(',') : []) : v; }); }
   const body = F.map(x => {
-    if (x.type === 'multi') return `<fieldset class="field wide"><legend>${esc(x.label)} <span class="opt" style="font-weight:400">(egy vagy több; üresen: felelős nélkül)</span></legend><div class="chips">${x.opts.map(o => `<label class="check" style="margin:0 1.25rem .25rem 0"><input type="checkbox" value="${esc(o[0])}" data-f="e_${x.k}" data-multi="1" data-k="e_${x.k}_${esc(o[0])}"><span>${esc(o[1])}</span></label>`).join('')}</div></fieldset>`;
+    if (x.type === 'multi') return peopleField('e_' + x.k, x.label, x.opts, 'Írd be a nevét', true, { wide: true, hint: x.hint });
+    if (x.type === 'person') return personField('e_' + x.k, x.label, x.opts, 'Írd be a nevét', null, true, { empty: x.empty });
+    if (x.type === 'meeting') return meetingChooser('e_meeting', x.sk, '', true);
     if (x.type === 'yn') return field('e_' + x.k, x.label, inSelect('e_' + x.k, yesNo, 'nincs megadva'), true);
-    if (x.type === 'select') return field('e_' + x.k, x.label, inSelect('e_' + x.k, x.opts, x.k === 'meeting' ? null : 'nincs megadva'), x.k !== 'meeting');
+    if (x.type === 'select') return field('e_' + x.k, x.label, inSelect('e_' + x.k, x.opts, 'nincs megadva'), true);
     if (x.type === 'date') return field('e_' + x.k, x.label, inDate('e_' + x.k), true);
     if (x.type === 'area') return `<div class="field wide"><label class="field-label" for="f-e_${x.k}">${esc(x.label)} <span class="opt">(nem kötelező)</span></label>${inArea('e_' + x.k)}</div>`;
     return field('e_' + x.k, x.label, inText('e_' + x.k), true);
@@ -1157,12 +1411,12 @@ function decisionSection(c, write) {
   else {
     if (f._dinit !== c.id) { f._dinit = c.id; f._dbase = c.ver; f._dtext = c.decision || ''; f.dec = T.draftOf('dec:' + c.id) || c.decision || ''; f.rows = f.rows || []; if (T.flowOf(c.type) === 'd2t' && !f.part) f.part = c.owners.slice(); }
     const rows = (f.rows || []).map((r, i) => `<li><div class="field"><label class="field-label" for="r-t-${i}">Teendő</label><input class="text-input" id="r-t-${i}" data-row="${i}" data-rf="text" data-k="r-t-${i}" value="${esc(r.text || '')}" autocomplete="off"></div>
-      <div class="field"><label class="field-label" for="r-o-${i}">Felelős</label><select class="select" id="r-o-${i}" data-row="${i}" data-rf="owner"><option value="">egyelőre senki</option>${staffOf(prof).map(s => `<option value="${s[0]}"${r.owner === s[0] ? ' selected' : ''}>${esc(s[1])}</option>`).join('')}</select></div>
+      ${cbField({ key: 'rows.' + i + '.owner', id: 'r-o-' + i, label: 'Felelős', opts: profPeople(prof), placeholder: 'Írd be a nevét', empty: 'egyelőre senki' })}
       <div class="field"><label class="field-label" for="r-d-${i}">Határidő</label><input class="text-input" type="date" id="r-d-${i}" data-row="${i}" data-rf="due" value="${esc(r.due || '')}"></div>
-      <div class="field"><label class="field-label" for="r-s-${i}">Új ügy is indul belőle</label><select class="select" id="r-s-${i}" data-row="${i}" data-rf="spawn"><option value="">nem</option>${['vizsgalat', 'engedely', 'labor'].filter(t => T.variant(prof, t) && T.variant(prof, t).on).map(t => `<option value="${t}"${r.spawn === t ? ' selected' : ''}>${esc(vlabel(prof, t))}</option>`).join('')}</select></div>
+      <div class="field"><label class="field-label" for="r-s-${i}">Kapcsolt ügy indul belőle</label><select class="select" id="r-s-${i}" data-row="${i}" data-rf="spawn"><option value="">nem</option>${T.spawnTypes(prof).map(t => `<option value="${t}"${r.spawn === t ? ' selected' : ''}>${esc(vlabel(prof, t))}</option>`).join('')}</select></div>
       <button class="btn-sm btn-icon" type="button" data-act="row-del" data-i="${i}">${ico('x')}${sr('A teendő törlése')}</button></li>`).join('');
     h += `<form data-form="decide" data-id="${c.id}" novalidate>${field('dec', 'Döntés', `<textarea class="textarea" id="f-dec" data-f="dec" data-k="f-dec" data-draft="dec:${c.id}"></textarea>`)}
-      ${T.flowOf(c.type) === 'd2t' ? `<fieldset class="field"><legend>Résztvevő orvosok</legend><div class="chips">${doctorsOf(prof).map(d => `<label class="check" style="margin:0 1.25rem 0 0"><input type="checkbox" value="${d[0]}" data-f="part" data-multi="1"><span>${esc(d[1])}</span></label>`).join('')}</div></fieldset>` : ''}
+      ${T.flowOf(c.type) === 'd2t' ? peopleField('part', 'Résztvevő orvosok', profPeople(prof, [], true), 'Írd be a nevét', false) : ''}
       <h3 class="sub-head">Teendők a döntésből</h3>${rows ? `<ul class="task-rows">${rows}</ul>` : '<p class="hint">Ha nincs teendő, így is mentheted.</p>'}
       <button class="btn-sm" type="button" data-act="row-add" data-k="row-add" style="margin-top:1rem">${ico('plus')}Teendő hozzáadása</button>
       ${conflictHtml(c, 'decision')}
@@ -1172,12 +1426,14 @@ function decisionSection(c, write) {
 }
 function tasksSection(c, write) {
   const ts = T.state().tasks.filter(t => t.caseId === c.id && (write || !t.done));
-  const f = ui.f, open = ui.panel && ui.panel.kind === 'task' && ui.panel.cid === c.id;
-  const li = ts.map(t => { const key = 'task:' + t.id; return `<li><div class="li-main"><span class="${t.done && !ui.undo[key] ? 'muted' : ''}" style="${t.done ? 'text-decoration:line-through' : ''}">${esc(t.text)}${t.spawned ? ` · <a href="#/ugy/${t.spawned}">ebből indult ügy</a>` : ''}</span>
-    <span>${ui.undo[key] ? undoHtml(key) : !t.done && write ? `<button class="btn-sm" type="button" data-act="task-done" data-id="${t.id}" data-key="${key}" data-k="act:${key}">${ico('check')}Kész${sr(': ' + t.text)}</button>` : t.done ? `<span class="muted">${ico('check')} kész, ${esc(T.relAt(t.done.at))}</span>` : ''}</span></div>
-    <p class="li-sub">${t.owner ? 'Felelős: ' + esc(userName(t.owner)) : '<strong class="late">nincs még felelős</strong>'}${t.due ? ' · határidő: ' + esc(fmtDate(t.due)) + (T.taskLate(t) ? ' <strong class="late">(' + esc(T.relDue(t.due)) + ')</strong>' : '') : ''}${t.note ? ' · „' + esc(t.note) + '”' : ''}${!t.owner && write && !t.done ? ` · <button class="link-btn lg" type="button" data-act="task-take" data-id="${t.id}">Elvállalom</button>` : ''}</p></li>`; }).join('');
+  const f = ui.f, open = ui.panel && ui.panel.kind === 'task' && ui.panel.cid === c.id, target = ui.r.q.teendo;
+  /* A teendőn, amelyből ügy lett: „kapcsolt ügy lett belőle: <cím>”; a lenyitott listából ide visz a teendő (?teendo=) */
+  const mark = t => { const sp = t.spawned && !ui.undo['task:' + t.id] ? T.Cs(t.spawned) : null; return sp && detailAcc(T.caseAccess(sp)) ? ' · ' + (t.done ? 'kapcsolt ügy lett belőle: ' : 'kapcsolt ügy indult belőle: ') + `<a href="#/ugy/${sp.id}">${esc(T.caseTitle(sp))}</a>` : ''; };
+  const li = ts.map(t => { const key = 'task:' + t.id; return `<li${target === t.id ? ` class="is-target" tabindex="-1" data-k="tli:${t.id}"` : ''}><div class="li-main"><span class="${t.done && !ui.undo[key] ? 'muted' : ''}" style="${t.done ? 'text-decoration:line-through' : ''}">${esc(t.text)}</span>
+    <span>${ui.undo[key] ? undoHtml(key) : !t.done && write ? taskActions(t, key, t.text, null) : t.done ? `<span class="muted">${ico('check')} kész, ${esc(T.relAt(t.done.at))}</span>` : ''}</span></div>
+    <p class="li-sub">${t.owner ? 'Felelős: ' + esc(userName(t.owner)) : '<strong class="late">nincs még felelős</strong>'}${t.due ? ' · határidő: ' + esc(fmtDate(t.due)) + (T.taskLate(t) ? ' <strong class="late">(' + esc(T.relDue(t.due)) + ')</strong>' : '') : ''}${t.note ? ' · „' + esc(t.note) + '”' : ''}${mark(t)}${!t.owner && write && !t.done ? ` · <button class="link-btn lg" type="button" data-act="task-take" data-id="${t.id}">Elvállalom</button>` : ''}</p>${spawnPanel(t, key)}</li>`; }).join('');
   return `<section class="section" aria-labelledby="h-teendok"><div class="section-head"><h2 id="h-teendok">Teendők <span class="count">${ts.filter(t => !t.done).length} nyitott</span></h2>${write && !c.closed && !open ? `<button class="link-btn lg" type="button" data-act="panel" data-panel="task" data-cid="${c.id}" data-k="new-task">${ico('plus')} Új teendő</button>` : ''}</div>
-    ${open ? `<form class="inline-form" data-form="task" data-id="${c.id}" novalidate>${field('ttext', 'Mit kell tenni?', inText('ttext', ' maxlength="160"'))}${personField('towner', 'Ki?', staffOf(c.profileId), 'egyelőre senki', null, true)}${field('tdue', 'Határidő', inDate('tdue'), true)}
+    ${open ? `<form class="inline-form" data-form="task" data-id="${c.id}" novalidate>${field('ttext', 'Mit kell tenni?', inText('ttext', ' maxlength="160"'))}${personField('towner', 'Ki?', profPeople(c.profileId), 'Írd be a nevét', null, true, { empty: 'egyelőre senki' })}${field('tdue', 'Határidő', inDate('tdue'), true)}
       <div class="form-actions" style="margin:0"><button class="btn-sm btn-fill" type="submit" data-k="t-save">${esc(consequenceLabel(f.towner ? [f.towner] : []))}</button><button class="btn-sm" type="button" data-act="panel-close">Mégse</button></div>${f._err ? `<p class="err" role="alert" style="flex-basis:100%">${ico('alert')}<span>${esc(f._err)}</span></p>` : ''}</form>` : ''}
     ${ts.length ? `<ul class="plain-list">${li}</ul>` : '<p class="empty">Nincs teendő.</p>'}</section>`;
 }
@@ -1207,14 +1463,137 @@ function labelsSection(c, write) {
     ${write ? `<form class="inline-form" data-form="label" data-id="${c.id}"><div class="field"><label class="field-label" for="f-label">Új címke</label><input class="text-input" id="f-label" data-f="label" data-k="f-label" list="cimke-javaslat" autocomplete="off" placeholder="például a diagnózis vagy egy eltérés"><datalist id="cimke-javaslat">${used.map(l => `<option value="${esc(l)}">`).join('')}</datalist></div><button class="btn-sm btn-fill" type="submit">Hozzáadás</button></form>
       ${used.length ? `<p class="hint">Már használt címkék: ${used.slice(0, 8).map(l => `<button class="link-btn" type="button" data-act="label-add" data-id="${c.id}" data-label="${esc(l)}">${esc(l)}</button>`).join(' · ')}</p>` : ''}` : ''}</section>`;
 }
-/* Hivatkozások; csak fejléc jogánál csak a közös ügytípus, a státuszkategória, a dátum és a felelős profil (bírálat 3.) */
-function linksSection(c) {
-  const links = (c.links || []).map(l => ({ l, x: T.Cs(l.id) })).filter(o => o.x && T.caseAccess(o.x) !== 'none');
-  if (!links.length) return '';
-  return `<section class="section" aria-labelledby="h-hiv"><div class="section-head"><h2 id="h-hiv">Hivatkozások <span class="count">${links.length}</span></h2></div><ul class="side-list">${links.map(o => {
-    if (T.caseAccess(o.x) === 'header') return `<li class="side-item"><p class="side-title">${esc(T.commonType(o.x))}</p><p class="side-meta">${esc(o.x.closed ? 'lezárt' : T.catWord[T.cat(o.x)])} · ${esc(fmtDate(o.x.created.at.slice(0, 10)))} · ${esc(T.profileName(o.x.profileId))} · csak fejléc</p></li>`;
-    return `<li class="side-item"><p class="side-meta" style="margin:0">${esc(o.l.rel)}</p><a class="side-title" href="#/ugy/${o.x.id}">${esc(T.caseTitle(o.x))}</a><p class="side-meta">${esc(typeName(o.x))} · ${o.x.closed ? 'lezárva: ' + esc(o.x.closed.reason) : esc(T.stepLabel(o.x))}</p></li>`;
-  }).join('')}</ul></section>`;
+/* Az ügy oldalán, a cím és az állapot alatt: „↳ Innen indult: <kiinduló> · <viszony, ha nem „ebből indult”> · <a kiinduló állapota>” (a terv 3.7).
+   Csak fejléc jogánál a közös ügytípus, a státusz, a dátum és a felelős profil, link nélkül (bírálat 3.; K9.4) */
+function originLine(c) {
+  const o = T.originOf(c); if (!o) return '';
+  if (!detailAcc(o.acc)) return `<p class="case-origin">${ico('sub')}<span>Innen indult: ${esc(hdrText(o.c))}</span></p>`;
+  return `<p class="case-origin">${ico('sub')}<span>Innen indult: <a href="#/ugy/${o.c.id}">${esc(shortName(o.c))}</a>${o.rel.kind !== 'ebbol' ? ' · ' + esc(o.word) : ''} · ${esc(stateWord(o.c))}</span></p>`;
+}
+/* „Kapcsolt ügyek” a főhasábban, a teendők után: ami ebből indult, és a kézzel kapcsoltak; a nyitottak elöl, a lezártak halványabban, a végén.
+   Csak akkor látszik, ha van kapcsolt ügy, vagy a néző kapcsolhat; a fejében „Meglévő ügy kapcsolása” (a terv 3.5, 3.7) */
+function linkedSection(c, write) {
+  const ls = T.linkedOf(c), ukey = 'rel:' + c.id, canLink = write && !c.closed, open = canLink && ui.panel && ui.panel.kind === 'relate' && ui.panel.cid === c.id;
+  if (!ls.length && !canLink && !ui.undo[ukey]) return '';
+  const li = o => o.acc === 'header'
+    ? `<li class="is-hdr"><div class="li-main"><span>${esc(T.commonType(o.c))}</span></div><p class="li-sub">${esc([o.word].concat(hdrParts(o.c).slice(1)).join(' · '))}</p></li>`
+    : `<li${o.c.closed ? ' class="is-closed"' : ''}><div class="li-main"><a href="#/ugy/${o.c.id}">${esc(T.caseTitle(o.c))}</a></div><p class="li-sub">${linkedSub(o)}</p></li>`;
+  return `<section class="section" aria-labelledby="h-kapcsolt"><div class="section-head"><h2 id="h-kapcsolt">Kapcsolt ügyek <span class="count">${ls.length}</span></h2>${canLink && !open ? `<button class="link-btn lg" type="button" data-act="relate-open" data-id="${c.id}" data-k="act:${ukey}">Meglévő ügy kapcsolása</button>` : ''}</div>
+    ${open ? relateForm(c) : ''}${ui.undo[ukey] ? undoHtml(ukey) : ''}
+    ${ls.length ? `<ul class="plain-list linked">${ls.map(li).join('')}</ul>` : '<p class="empty">Nincs kapcsolt ügy. Kapcsolt ügy a teendő menüjéből indul; meglévő ügyet itt kapcsolhatsz.</p>'}</section>`;
+}
+/* Meglévő ügy kapcsolása: a beteg ügyei, a nyitottak elöl, kereshetően; beteg nélküli ügynél bármely látható ügy. Csak olyan ügy, amelyet a néző
+   részletesen láthat, és amely még nincs kapcsolva. Szabad szöveg nincs: a viszony „kapcsolódik” */
+function relateOpts(c) {
+  const ok = x => x.id !== c.id && (c.patientId ? x.patientId === c.patientId : true) && detailAcc(T.caseAccess(x)) && !T.relBetween(c.id, x.id);
+  return T.state().cases.filter(ok).sort((a, b) => (!!a.closed - !!b.closed) || (b.created.at > a.created.at ? 1 : -1)).map(x => {
+    const sub = [typeName(x) + (T.isMember(T.me(), x.profileId) ? '' : ' · ' + T.profileName(x.profileId)), stateWord(x), fmtDate(x.created.at.slice(0, 10))].join(' · ');
+    return { v: x.id, name: T.caseTitle(x), sub, hay: T.norm([T.caseTitle(x), sub, c.patientId ? '' : ptName(T.P(x.patientId))].join(' ')) };
+  });
+}
+function relateForm(c) {
+  const f = ui.f, opts = relateOpts(c);
+  if (!opts.length) return `<div class="inline-form"><p class="hint" style="margin:0">${c.patientId ? 'A betegnek nincs más ügye, amelyet kapcsolhatnál.' : 'Nincs más ügy, amelyet kapcsolhatnál.'}</p><button class="btn-sm" type="button" data-act="relate-cancel" data-k="rel-cancel">Mégse</button></div>`;
+  return `<form class="inline-form" data-form="relate" data-id="${c.id}" novalidate>${cbField({ key: 'relId', id: 'f-relId', label: 'Melyik ügyet kapcsolod?', opts, placeholder: 'Írd be a címét vagy az ügytípusát', err: f._eRel, errKey: '_eRel', none: 'Nincs ilyen ügy a listán. Próbáld a cím vagy az ügytípus elejével.', hint: c.patientId ? 'A beteg ügyei, amelyeket részletesen láthatsz.' : 'Bármely ügy, amelyet részletesen láthatsz.' })}
+    <div class="form-actions" style="margin:0"><button class="btn-sm btn-fill" type="submit" data-k="rel-save">Kapcsolom</button><button class="btn-sm" type="button" data-act="relate-cancel">Mégse</button></div>
+    <p class="hint" style="flex-basis:100%; margin:0">Egyenrangú kapcsolat: mindkét ügy listájában ott lesz a másik, „kapcsolódik” jelöléssel.</p></form>`;
+}
+/* ---------------- Kapcsolt ügy indítása ebből a teendőből (a terv 3.4) ----------------
+   A teendő sora alatt nyílik. Az ügytípust választani kell (egyik sincs előre kiválasztva); utána egy sor megmondja, hová kerül, mi az első lépése,
+   ki viszi, és mi kerül át. Átkerül a beteg, a cím, a határidő és a felelős; az ügytípus adatai kitölthetők, nem kötelezők (K4.7).
+   Mentés után a felhasználó a helyén marad; a teendő helyén a visszavonás sora, a kapcsolt ügy megnyitásával */
+function spawnOwnerSpec(t, c, type) {
+  const prof = c.profileId, uid = T.me(), area = type ? cfg.areas[T.areaFor(type, prof, uid)] : null;
+  const to = t.owner && T.U(t.owner).profile === prof ? t.owner : null, ao = area && area.owner && T.U(area.owner).profile === prof ? area.owner : null, opts = [];
+  if (to) opts.push(['task', userName(to) + ', a teendő felelőse']); else if (ao) opts.push(['area', userName(ao) + ' (az área felelőse)']);
+  if (uid !== (to || ao)) opts.push(['me', 'én']);
+  opts.push(['other', 'más'], ['none', 'egyelőre senki']);
+  return { opts, def: to ? 'task' : ao ? 'area' : 'none', to, ao };
+}
+function spawnOwners(t, c, f) {
+  const S = spawnOwnerSpec(t, c, f.ltype), v = S.opts.some(o => o[0] === f.lowner) ? f.lowner : S.def;
+  return v === 'task' ? [S.to] : v === 'area' ? [S.ao] : v === 'me' ? [T.me()] : v === 'other' ? (f.lownerId ? [f.lownerId] : ['?']) : [];
+}
+function spawnTitleField(type) {
+  if (T.isMeet(type)) return field('ltitle', 'Kérdés', inText('ltitle'));
+  if (type === 'altalanos') return field('ltitle', 'Mit kell tenni?', inText('ltitle', ' maxlength="160"'));
+  if (!T.titleFromTask(type)) return `<p class="hint">${type === 'engedely' ? 'Az engedély címét a gyógyszer adja (például „Rituximab-engedély”), ezért a teendő szövege itt nem lesz cím.' : 'Az átadás címét a fogadó intézmény adja, ezért a teendő szövege itt nem lesz cím.'}</p>`;
+  return `<div class="field"><label class="field-label" for="f-ltitle">Cím</label><span class="field-hint" id="ltitle-h">A teendő szövege, átírható; ha üresen hagyod, az ügytípus adja${type === 'vizsgalat' ? ' (például „MR, jobb térd”)' : ''}.</span>${inText('ltitle', ' aria-describedby="ltitle-h"')}</div>`;
+}
+/* Az ügytípus mezői, mint az „Új ügy” űrlapján (nem kötelezők); megbeszélésnél az alkalom is (K5.10) */
+function spawnTypeFields(type, prof, pt) {
+  const f = ui.f, g = pt ? T.careIn(pt.id, prof) : null;
+  if (type === 'vizsgalat') {
+    if (f.exam === undefined) f.exam = cfg.profiles[prof].exams[0] || 'MR';
+    return `<div class="fields-2">${field('exam', 'Vizsgálat', inSelect('exam', cfg.profiles[prof].exams.map(x => [x, x])))}${field('region', 'Régió', inText('region'), true)}
+      ${field('from', 'Időablak: mettől', inDate('from'), true)}${field('to', 'Időablak: meddig', inDate('to'), true)}</div>${chipsF('anesthesia', 'Altatás', yesNo, true)}`;
+  }
+  if (type === 'labor') {
+    if (f.requestedOn === undefined) f.requestedOn = today();
+    return `<div class="fields-2">${field('test', 'Vizsgálat', inText('test'), true)}${personField('notify', 'Kinek kell jelezni', profPeople(prof, [], true), 'Írd be a nevét', null, true, { empty: 'senkinek külön' })}
+      ${field('requestedOn', 'A kérés napja', inDate('requestedOn'), true)}${field('expectedOn', 'Várható eredmény', inDate('expectedOn'), true)}</div>`;
+  }
+  if (type === 'engedely') {
+    if (f.indication === undefined) f.indication = g ? g.dx : '';
+    if (f.reqType === undefined) f.reqType = 'új';
+    return `<div class="fields-2">${field('drug', 'Gyógyszer', inText('drug'), true)}${field('indication', 'Indikáció', inText('indication'), true)}</div>
+      ${chipsF('reqType', 'Kérelemtípus', cfg.reqTypes.map(x => [x, x]))}${chipsF('offLabel', 'Indikáción túli alkalmazás', yesNo, true)}`;
+  }
+  if (T.isMeet(type)) {
+    const sk = cfg.types[type].meeting;
+    if (f.meeting === undefined) f.meeting = T.nextMeeting(sk);
+    return meetingChooser('meeting', sk, '') + (T.flowOf(type) === 'd2t' ? '' : field('region', 'Régió vagy terület', inText('region'), true)) + `<div class="field"><label class="field-label" for="f-summary">Rövid összefoglaló <span class="opt">(nem kötelező)</span></label>${inArea('summary')}</div>`;
+  }
+  if (type === 'atadas') return `<div class="fields-2">${field('institution', 'Fogadó intézmény', inText('institution'), true)}${field('recvDoctor', 'Fogadó orvos', inText('recvDoctor'), true)}
+      ${field('contact', 'Intézményi elérhetőség', inText('contact'), true)}${field('plannedOn', 'Tervezett nap', inDate('plannedOn'), true)}</div>`;
+  return '';
+}
+function spawnData(type, f, prof, owners) {
+  const yn = v => v === 'igen' ? true : v === 'nem' ? false : undefined;
+  let d = {};
+  if (type === 'vizsgalat') d = { exam: f.exam || 'MR', region: f.region || '', from: f.from || '', to: f.to || '', anesthesia: yn(f.anesthesia) };
+  else if (type === 'labor') d = { test: f.test || '', requestedOn: f.requestedOn || '', expectedOn: f.expectedOn || '', notify: f.notify || '' };
+  else if (type === 'engedely') d = { drug: f.drug || '', indication: f.indication || '', reqType: f.reqType || 'új', offLabel: yn(f.offLabel) };
+  else if (T.isMeet(type)) d = { question: (f.ltitle || '').trim(), region: T.flowOf(type) === 'd2t' ? '' : f.region || '', summary: f.summary || '' };
+  else if (type === 'atadas') d = { institution: f.institution || '', recvDoctor: f.recvDoctor || '', contact: f.contact || '', plannedOn: f.plannedOn || '', coordinator: owners[0] || '', docReady: false };
+  return Object.assign(d, plusData(prof, type, f));
+}
+function spawnPanel(t, key) {
+  const pn = ui.panel; if (!pn || pn.kind !== 'spawn' || pn.key !== key || pn.tid !== t.id || t.done || t.spawned) return '';
+  const f = ui.f, c = T.Cs(t.caseId); if (!c) return '';
+  const prof = c.profileId, pt = c.patientId ? T.P(c.patientId) : null, menu = cfg.newMenu[prof] || [];
+  const all = T.spawnTypes(prof, true), types = all.filter(x => !T.isMeet(x)).concat(all.filter(T.isMeet));
+  const tname = ty => (menu.find(m => m[0] === ty) || [ty, cfg.types[ty].name])[1];
+  if (f.ltitle === undefined) f.ltitle = t.text;
+  if (f.ldue === undefined) f.ldue = t.due || '';
+  const type = types.indexOf(f.ltype) > -1 ? f.ltype : '', eT = f._eType;
+  let body = `<fieldset class="field"${eT ? ' aria-describedby="lk-type-err"' : ''}><legend>Milyen ügy lesz belőle?</legend><p class="field-hint">Kapcsolt ügy akkor kell, ha a munka egy másik área dolga, saját lépésekkel; különben elég a teendő.</p>
+    <div class="chips">${types.map((ty, i) => `<label class="chip"><input type="radio" name="c-ltype" value="${esc(ty)}" data-f="ltype" data-rerender="1"${i === 0 ? ' data-k="lk-type-first"' : ''}><span>${esc(tname(ty))}</span></label>`).join('')}</div>
+    ${eT ? `<p class="err" id="lk-type-err" role="alert">${ico('alert')}<span>${esc(eT)}</span></p>` : ''}</fieldset>`;
+  let prev = '';
+  if (type) {
+    const S = spawnOwnerSpec(t, c, type); if (!S.opts.some(o => o[0] === f.lowner)) f.lowner = S.def;
+    const owners = spawnOwners(t, c, f), an = T.areaName(T.areaFor(type, prof, T.me()));
+    const first = T.stepLabel({ type, profileId: prof, data: {} }, cfg.types[type].steps[0].id), carried = [];
+    if (pt) carried.push('a beteg');
+    if ((T.isMeet(type) || T.titleFromTask(type)) && (f.ltitle || '').trim() === t.text.trim()) carried.push('a cím');
+    if (t.due && f.ldue === t.due) carried.push('a határidő (' + fmtDate(t.due) + ')');
+    const ownCarried = !!t.owner && owners.length === 1 && owners[0] === t.owner;
+    if (ownCarried) carried.push('a felelős (' + userName(t.owner) + ')');
+    const who = ownCarried ? '' : !owners.length ? ' · felelős nélkül, a munkalistán a „Felelős nélkül” részben' : owners[0] === '?' ? '' : ' · viszi: ' + owners.map(userName).join(', ');
+    prev = `<p>Hová kerül: ${esc(art(an) + ' ' + an)} munkalistájára · első lépés: ${esc(first)}${esc(who)}</p>${carried.length ? `<p>Átkerül: ${esc(carried.join(', '))}</p>` : ''}`;
+    body += `<div class="lk-prev"><div id="lk-prev" aria-live="polite">${prev}</div></div>`;
+    body += spawnTitleField(type) + spawnTypeFields(type, prof, pt) + plusFields(prof, type) + field('ldue', 'Határidő', inDate('ldue'), true);
+    body += `<fieldset class="field"><legend>Felelős</legend><div class="chips">${S.opts.map(o => `<label class="chip"><input type="radio" name="c-lowner" value="${o[0]}" data-f="lowner" data-rerender="1"><span>${esc(o[1])}</span></label>`).join('')}</div></fieldset>`
+      + (f.lowner === 'other' ? personField('lownerId', 'Ki?', profPeople(prof, [T.me()]), 'Írd be a nevét', f._eOwner, false, { errKey: '_eOwner' }) : '');
+  } else body += `<div id="lk-prev" aria-live="polite"></div>`;
+  const owners = type ? spawnOwners(t, c, f) : null;
+  return `<form class="link-form" data-form="spawn" data-id="${t.id}" data-key="${esc(key)}" novalidate aria-labelledby="lk-h">
+    <h3 class="form-h" id="lk-h" tabindex="-1" data-k="lk-h">Kapcsolt ügy indítása</h3>
+    <p class="lk-from">Innen indul: ${esc(shortName(c))}${pt ? ' · ' + esc(ptName(pt)) + ', <span class="taj">' + esc(T.patientId(pt)) + '</span>' : ''}<br>A teendőből: „${esc(t.text)}”</p>
+    ${body}${f._err ? `<p class="err" role="alert">${ico('alert')}<span>${esc(f._err)}</span></p>` : ''}
+    <div class="form-actions"><button class="btn btn-primary" type="submit" data-k="lk-save">${ico('check')}${esc(type ? consequenceLabel(owners) : 'Kapcsolt ügy indítása')}</button><button class="btn btn-quiet" type="button" data-act="spawn-cancel" data-key="${esc(key)}">Mégse</button></div>
+    <p class="hint">${T.spawnClosesTask ? 'A teendő ezzel kész lesz; rajta marad, hogy kapcsolt ügy lett belőle.' : 'A teendő nyitva marad; rajta marad, hogy kapcsolt ügy indult belőle.'}</p></form>`;
 }
 /* ---------------- Nézet: új beteg (K3.2–K3.5) ---------------- */
 function vUjBeteg() {
@@ -1313,7 +1692,7 @@ function vCsatolmany(cid, idx) {
 const whereOf = rq => rq.profile ? T.profileName(rq.profile) + ', ' + cfg.departments[cfg.profiles[rq.profile].dept].name : rq.dept ? cfg.departments[rq.dept].name + ' részleg' : 'a klinika';
 const DAY_ON = { 1: 'hétfőn', 2: 'kedden', 3: 'szerdán', 4: 'csütörtökön', 5: 'pénteken' };
 const SET_PARTS = {
-  ugytipusok: ['Ügytípusok és változatok', 'A hat általános ügytípus a klinika katalógusából jön: a profil bekapcsolja, amit használ, és saját változatot készít belőle. Mellé saját ügytípust is létrehozhat.'],
+  ugytipusok: ['Ügytípusok és lépések (státuszok)', 'Az ügy a lépésein halad végig; a lépés a klinika szavával a státusz. A hat általános ügytípus a klinika katalógusából jön: a profil bekapcsolja, amit használ, és saját változatot készít belőle (név, área, a lépések neve, plusz adatok). Mellé saját ügytípust is létrehozhat, saját lépésekkel.'],
   megbeszelesek: ['Megbeszélések', 'Az esetmegbeszélés változatai: mindegyiknek saját napja, résztvevői és bejelentési határideje van. Az alkalmak ebből jönnek létre, a napirend a bejelentett esetekből magától áll össze.'],
   emlekeztetok: ['Emlékeztetők', 'Mikor szóljon az emlékeztető, ügytípusonként. Az emlékeztető kevés, összevont, és mindig dátumhoz kötött.'],
   nezetek: ['Közös nézetek', 'A munkalisták kész nézetei áreánként; a profil minden tagjánál ezek látszanak. Saját nézetet bárki menthet a munkalistán: az csak neki látszik, és ezt a menüt nem bővíti.'],
@@ -1342,13 +1721,32 @@ function vBeallitasok(part) {
   }
   return `<div class="page-head"><div><h1 tabindex="-1" data-k="h1">Beállítások</h1><p class="lede">${esc(T.profileName(prof))}, ${esc(deptName(prof))} · ${esc(as)}</p></div></div>
     ${seg}
-    <div class="layout set-home"><div class="primary">${requestsSection(T.requestsFor(uid, prof), prof)}${membersSection(prof)}${areasSection(prof)}</div>
+    <div class="layout set-home"><div class="primary">${requestsSection(T.requestsFor(uid, prof), prof)}${membersSection(prof)}${areasSection(prof)}${typesFront(prof, profs)}</div>
     <div class="side">${rareLinks(prof, setQ(prof, profs))}${fixedNote()}</div></div>`;
 }
 function mainAdminPage() {
   return `<div class="page-head"><div><h1 tabindex="-1" data-k="h1">Beállítások</h1><p class="lede">Fő admin · a klinika</p></div></div>
     <p class="note-line">A fő admin hagyja jóvá az osztályvezetők, a főnővérek és a vezetőség regisztrációját. A profilok beállítása a profilok adminjainál van, ezen a felületen. A klinika szerkezetét és az új profilt az üzemeltető állítja be.</p>
     ${requestsSection(T.requestsFor(T.me()), null)}`;
+}
+/* Ügytípusok és lépéseik (státuszok) a főoldalon, a tagok és az áreák után (CT, 2026-11-19): a klinika szavával a lépés a státusz;
+   az admin itt látja, milyen lépéseken halad az ügy, és egy kattintással a szerkesztőben van, fejlesztés nélkül */
+function typesFront(prof, profs) {
+  const vs = cfg.variants[prof] || {}, base = '#/beallitasok/ugytipusok', pq = profs.length > 1 ? 'profil=' + prof + '&' : '';
+  const to = (path, k) => path + '?' + pq + 'nyit=' + encodeURIComponent(k);
+  const meets = Object.keys(cfg.series).filter(k => cfg.series[k].profile === prof);
+  const list = cfg.catalog.filter(k => k.type !== 'meeting' && vs[k.type] && vs[k.type].on).map(k => ({ type: k.type, name: vlabel(prof, k.type), kind: k.name, href: to(base, k.type) }))
+    .concat(meets.map(k => ({ type: k, name: vlabel(prof, k), kind: 'Esetmegbeszélés', href: to('#/beallitasok/megbeszelesek', k) })))
+    .concat(T.state().types.filter(t => t.profile === prof).map(t => ({ type: t.id, name: t.name, kind: 'Saját ügytípus', href: to(base, t.id) })));
+  const off = cfg.catalog.filter(k => k.type !== 'meeting' && vs[k.type] && !vs[k.type].on).map(k => k.name);
+  const steps = type => { const t = cfg.types[type], fake = { type, profileId: prof, data: {} }; return t.steps.concat(t.closeSteps || []).map(s => T.stepLabel(fake, s.id)); };
+  const row = x => `<li><div class="li-main"><h3 class="area-name">${esc(x.name)}</h3><span class="member-act"><a class="btn-sm" href="${x.href}" data-k="tf-${esc(x.type)}">Lépések és adatok${sr(': ' + x.name)}</a></span></div>
+    <p class="li-sub">${x.kind !== x.name ? esc(x.kind) + ' · ' : ''}${esc(T.areaName(cfg.defaultArea[prof][x.type]))}</p>
+    <ol class="step-line" aria-label="${esc(x.name)}: lépések (státuszok)">${steps(x.type).map(l => `<li>${esc(l)}</li>`).join('')}</ol></li>`;
+  return `<section class="section" aria-labelledby="h-tipusok-fo"><div class="section-head"><h2 id="h-tipusok-fo">Ügytípusok és lépések (státuszok) <span class="count">${list.length}</span></h2><a class="link-btn lg" href="${to(base, 'uj')}" data-k="tf-uj">${ico('plus')} Új ügytípus</a></div>
+    <p class="group-note">Az ügy a lépésein halad végig; a lépés a klinika szavával a státusz. A lépések neve átnevezhető, a kategóriájuk kötött. Ha egy folyamat egyik ügytípusba sem illik, új ügytípus hozható létre, saját lépésekkel.</p>
+    ${list.length ? `<ul class="plain-list tf-list">${list.map(row).join('')}</ul>` : '<p class="grp-empty">Még nincs bekapcsolt ügytípus.</p>'}
+    <p class="hint">${off.length ? 'Bekapcsolható még: ' + esc(off.join(', ')) + '. ' : ''}<a href="${base}${profs.length > 1 ? '?profil=' + prof : ''}">Az összes ügytípus: bekapcsolás, plusz adatok</a></p></section>`;
 }
 /* A ritkább beállítások: egy-egy sor arról, mi most a beállítás, és egy kattintással ott vagy */
 function rareLinks(prof, q) {
@@ -1357,7 +1755,6 @@ function rareLinks(prof, q) {
   const areas = cfg.areaOrder[prof], views = areas.reduce((n, a) => n + areaViews(a).length, 0), hidden = areas.reduce((n, a) => n + readyViews(a).length - areaViews(a).length, 0);
   const d = T.state().duties.find(x => x.id === prof) || { merge: [], audit: [] }, names = l => l.map(userName).join(', ') || 'senki';
   const items = [
-    ['ugytipusok', 'Ügytípusok és változatok', (on === 6 ? 'mind a hat általános ügytípus bekapcsolva' : on + ' bekapcsolva a hat általános ügytípusból') + (own ? ' · ' + own + ' saját ügytípus' : '')],
     ['megbeszelesek', 'Megbeszélések', meets.length ? meets.map(k => vlabel(prof, k) + ': ' + DAY_ON[cfg.series[k].dow]).join(' · ') : 'még nincs megbeszélés'],
     ['emlekeztetok', 'Emlékeztetők', 'engedély ' + T.remindOf(prof, 'engedely') + ' hét · vizsgálat ' + T.remindOf(prof, 'vizsgalat') + ' hét · átadás ' + T.remindOf(prof, 'atadas') + ' hónap'],
     ['nezetek', 'Közös nézetek', areas.length ? areas.length + ' área, ' + views + ' nézet' + (hidden ? ', ' + hidden + ' elrejtve' : '') : 'még nincs área'],
@@ -1412,9 +1809,11 @@ function membersSection(prof) {
     let act = '';
     if (ui.undo[key]) act = undoHtml(key);
     else if (ui.undo[mkey]) act = undoHtml(mkey);
-    /* Az osztályvezetői és a főnővéri szerepkört a fő admin kezeli; a főnővérnek az osztályvezető ettől még adhat adminjogot */
-    else if (open !== k && (!T.toMainAdmin(m.role) || (!m.head && grant && !src))) act = `<button class="btn-sm" type="button" data-act="member-open" data-id="${k}" data-k="mod:${k}">Módosítás${sr(': ' + m.name)}</button>`;
-    const ar = inAreas(k), sub = [how ? 'Admin: ' + esc(how) : '', T.toMainAdmin(m.role) ? cap(art(m.role)) + ' ' + m.role + 'i szerepkört a fő admin kezeli' : '', ar.length ? 'Áreák: ' + esc(ar.join(', ')) : ''].filter(Boolean).join(' · ');
+    /* Az osztályvezetői és a főnővéri szerepkört a fő admin kezeli; a főnővérnek az osztályvezető ettől még adhat adminjogot.
+       A saját szerepkörét és tagságát senki nem módosítja (a prototípus bírálata, 1.): a sorában nincs „Módosítás” */
+    else if (open !== k && k !== uid && (!T.toMainAdmin(m.role) || (!m.head && grant && !src))) act = `<button class="btn-sm" type="button" data-act="member-open" data-id="${k}" data-k="mod:${k}">Módosítás${sr(': ' + m.name)}</button>`;
+    const selfNote = k === uid && !T.toMainAdmin(m.role) ? 'A saját szerepkörödet és tagságodat a profil másik adminja módosíthatja' : '';
+    const ar = inAreas(k), sub = [how ? 'Admin: ' + esc(how) : '', T.toMainAdmin(m.role) ? cap(art(m.role)) + ' ' + m.role + 'i szerepkört a fő admin kezeli' : '', selfNote, ar.length ? 'Áreák: ' + esc(ar.join(', ')) : ''].filter(Boolean).join(' · ');
     return `<li${open === k ? ' class="is-open"' : ''}><div class="li-main"><span><span class="member-name">${esc(m.name)}</span> <span class="muted">${esc(m.role)}</span></span><span class="member-act">${src ? '<span class="tag">admin</span>' : ''}${act}</span></div>
       ${sub ? `<p class="li-sub">${sub}</p>` : ''}${open === k ? memberEditor(k, prof) : ''}</li>`;
   };
@@ -1425,7 +1824,8 @@ function membersSection(prof) {
     ${members.length + gone.length ? `<ul class="plain-list members">${members.concat(gone).map(row).join('')}</ul>` : '<p class="grp-empty">A profilnak még nincs tagja.</p>'}</section>`;
 }
 /* A névelő a szó elejéhez igazodik: „az osztályvezetői”, „a főnővéri” */
-const art = w => /^[aáeéiíoóöőuúüű]/i.test(w) ? 'az' : 'a';
+/* A névelő: magánhangzóval kezdődő szó előtt „az”; a magánhangzóval ejtett betűszó előtt is („az MR-előjegyzés”) */
+const art = w => /^[aáeéiíoóöőuúüű]/i.test(w) || /^[FLMNRSX](?=[A-ZÁÉÍÓÖŐÚÜŰ0-9-])/.test(w) ? 'az' : 'a';
 function outText(L) {
   const items = [L.cases.length ? L.cases.length + ' nyitott ügye' : '', L.tasks.length ? L.tasks.length + ' teendője' : ''].filter(Boolean);
   const own = L.owner.map(a => a.name);
@@ -1434,7 +1834,8 @@ function outText(L) {
 }
 function memberEditor(k, prof) {
   const f = ui.f, m = cfg.users[k], roles = cfg.profileRoles.filter(r => !T.toMainAdmin(r)), self = k === T.me(), fixed = T.toMainAdmin(m.role);
-  if (f._minit !== k) { f._minit = k; f.mrole = m.role; }
+  if (self) return '';
+  if (f._mrinit !== prof + ':' + k) { f._mrinit = prof + ':' + k; f.mrole = m.role; }
   /* A főnővéri szerepkört a profil adminja nem adhatja és nem veheti el (K9.12): itt csak az adminjog kiadása marad */
   if (fixed) return `<form class="inline-form member-edit" data-form="member" data-uid="${k}" data-prof="${prof}" novalidate aria-label="${esc(m.name)}: adminjog">
     <p class="hint member-out" style="margin:0">${esc(cap(art(m.role)))} ${esc(m.role)}i szerepkört a fő admin adja és veszi el; a profil adminja nem módosíthatja, és a profilból sem veheti ki.</p>
@@ -1467,19 +1868,18 @@ function areasSection(prof) {
     ${ids.length ? `<ul class="plain-list areas">${ids.map(row).join('')}</ul>` : open === 'new' ? '' : '<p class="grp-empty">A profilnak még nincs áreája. Vedd fel az elsőt; utána bekapcsolhatod az ügytípusokat.</p>'}</section>`;
 }
 function areaForm(prof, aid) {
-  const f = ui.f, a = aid ? cfg.areas[aid] : null, mem = T.membersOf(prof).map(k => [k, cfg.users[k].name + ' (' + cfg.users[k].role + ')']);
-  if (f._ainit !== (aid || 'new')) { f._ainit = aid || 'new'; f.aname = a ? a.name : ''; f.amem = a ? a.members.slice() : []; f.aowner = a ? a.owner || '' : ''; f.adeputy = a ? a.deputy || '' : ''; }
+  const f = ui.f, a = aid ? cfg.areas[aid] : null, mem = people(T.membersOf(prof)), ik = prof + ':' + (aid || 'new');
+  if (f._ainit !== ik) { f._ainit = ik; f.aname = a ? a.name : ''; f.amem = a ? a.members.slice() : []; f.aowner = a ? a.owner || '' : ''; f.adeputy = a ? a.deputy || '' : ''; }
   const E = f._ae || {}, en = E.name && !((f.aname || '').trim() && !E.dup) ? E.name : '';
   return `<form class="set-form" data-form="area" data-id="${aid || ''}" data-prof="${prof}" novalidate aria-labelledby="af-h">
     <h3 class="form-h" id="af-h" tabindex="-1" data-k="af-h">${a ? esc(a.name) + ': módosítás' : 'Új área'}</h3>
     <div class="field"><label class="field-label" for="f-aname">Az área neve</label><input class="text-input" id="f-aname" data-f="aname" data-k="f-aname" maxlength="60" autocomplete="off"${en ? ' aria-invalid="true" aria-describedby="aname-err"' : ''}>${en ? `<p class="err" id="aname-err" role="alert">${ico('alert')}<span>${esc(en)}</span></p>` : ''}</div>
-    <fieldset class="field"><legend>Kik dolgoznak itt? <span class="opt">(nem kötelező)</span></legend><p class="field-hint">A nővér és az asszisztens a Teendőim alatt azoknak az áreáknak a munkalistáját is látja, ahol dolgozik.</p>
-      ${mem.length ? `<div class="checks">${mem.map(m => `<label class="check"><input type="checkbox" value="${esc(m[0])}" data-f="amem" data-multi="1" data-k="amem-${esc(m[0])}"><span>${esc(m[1])}</span></label>`).join('')}</div>` : '<p class="hint">A profilnak még nincs tagja.</p>'}</fieldset>
-    <div class="fields-2">${personField('aowner', 'Alapértelmezett felelős', mem, 'nincs', null, true)}${personField('adeputy', 'Helyettes', mem, 'nincs', null, true)}</div>
+    ${mem.length ? peopleField('amem', 'Kik dolgoznak itt?', mem, 'Írd be a nevét', true, { hint: 'A nővér és az asszisztens a Teendőim alatt azoknak az áreáknak a munkalistáját is látja, ahol dolgozik.' }) : '<p class="hint">A profilnak még nincs tagja.</p>'}
+    <div class="fields-2">${personField('aowner', 'Alapértelmezett felelős', mem, 'Írd be a nevét', null, true, { empty: 'nincs' })}${personField('adeputy', 'Helyettes', mem, 'Írd be a nevét', null, true, { empty: 'nincs' })}</div>
     <p class="field-hint" style="margin-top:.5rem">Az új ügy a felelőst kapja; aki létrehozza, másnak is adhatja. A helyettes a felelős távollétében viszi az área tételeit. Mindketten magától az área tagjai lesznek.</p>
     <div class="form-actions"><button class="btn btn-primary" type="submit" data-k="af-save">${ico('check')}${a ? 'Mentés' : 'Létrehozom az áreát'}</button><button class="btn btn-quiet" type="button" data-act="area-close" data-id="${aid || 'new'}">Mégse</button></div></form>`;
 }
-/* Ügytípusok és változatok (K4.1, K4.2): a hat általános ügytípus a profilban, és a saját ügytípusok (K4.17) */
+/* Ügytípusok és lépések (státuszok) (K4.1, K4.2): a hat általános ügytípus a profilban, és a saját ügytípusok (K4.17) */
 function stepTrack(prof, type) {
   const t = cfg.types[type], fake = { type, profileId: prof, data: {} };
   return `<ol class="track type-track" aria-label="${esc(vlabel(prof, type))}: lépések">${t.steps.concat(t.closeSteps || []).map(s => `<li><span class="dot" aria-hidden="true"></span>${esc(T.stepLabel(fake, s.id))}<span class="cat">${esc(T.catWord[s.cat])}${s.cat === 'V' && s.wait ? ': ' + esc(s.wait) : ''}</span></li>`).join('')}</ol>`;
@@ -1500,20 +1900,22 @@ function variantItem(prof, k) {
   const key = 'var:' + k.type, open = ui.panel && ui.panel.kind === 'variant' && ui.panel.type === k.type, areas = cfg.areaOrder[prof];
   const h = act => `<div class="li-main"><h3 class="type-name" id="vt-${k.type}" tabindex="-1" data-k="vt-${k.type}">${esc(k.name)}</h3><span class="member-act">${act}</span></div>`;
   if (!v.on) {
-    const act = ui.undo[key] ? undoHtml(key) : areas.length ? `<button class="btn-sm btn-fill" type="button" data-act="var-on" data-type="${k.type}" data-prof="${prof}" data-k="act:${key}">Bekapcsolom: ${esc(T.areaName(areas[0]))}${sr(', ' + k.name)}</button>` : '';
+    /* A gomb és a művelet ugyanabból a céláreából számol: a változat korábbi áreája, ennek híján a profil első áreája (a prototípus bírálata, 8.) */
+    const to = T.variantOnArea(prof, k.type);
+    const act = ui.undo[key] ? undoHtml(key) : to ? `<button class="btn-sm btn-fill" type="button" data-act="var-on" data-type="${k.type}" data-prof="${prof}" data-area="${to}" data-k="act:${key}">Bekapcsolom: ${esc(T.areaName(to))}${sr(', ' + k.name)}</button>` : '';
     return `<li class="var-item is-off">${h(act)}<p class="li-sub">${esc(k.about)}</p>
-      <p class="li-sub"><strong>Nincs bekapcsolva.</strong> ${areas.length ? 'Bekapcsolva az ügyei a(z) ' + esc(T.areaName(areas[0])) + ' munkalistájára kerülnek; a változatban ez is módosítható.' : 'Előbb vegyél fel egy áreát a Beállítások főoldalán: az ügyek egy área munkalistáján állnak.'}</p></li>`;
+      <p class="li-sub"><strong>Nincs bekapcsolva.</strong> ${to ? 'Bekapcsolva az ügyei a(z) ' + esc(T.areaName(to)) + ' munkalistájára kerülnek; a változatban ez is módosítható.' : 'Előbb vegyél fel egy áreát a Beállítások főoldalán: az ügyek egy área munkalistáján állnak.'}</p></li>`;
   }
   const act = ui.undo[key] ? undoHtml(key) : open ? '' : `<button class="btn-sm" type="button" data-act="var-open" data-type="${k.type}" data-k="mod:${k.type}">Módosítás${sr(': ' + k.name)}</button>`;
   const meta = [v.name && v.name !== k.name ? 'A profilban: <strong>' + esc(v.name) + '</strong>' : 'Bekapcsolva', 'área: ' + esc(T.areaName(cfg.defaultArea[prof][k.type])),
-    k.list ? 'vizsgálatok: ' + esc(cfg.profiles[prof].exams.join(', ')) : '', (v.extra || []).length ? 'plusz adat: ' + esc(v.extra.map(e => e.label).join(', ')) : ''].filter(Boolean).join(' · ');
+    k.list ? 'vizsgálatok: ' + esc(cfg.profiles[prof].exams.join(', ')) : '', (v.extra || []).some(e => !e.archived) ? 'plusz adat: ' + esc(v.extra.filter(e => !e.archived).map(e => e.label).join(', ')) : ''].filter(Boolean).join(' · ');
   return `<li class="var-item${open ? ' is-open' : ''}">${h(act)}<p class="li-sub">${meta}</p>${stepTrack(prof, k.type)}${open ? variantEditor(prof, k, v) : ''}</li>`;
 }
 /* A lépések neve: átnevezhető, a kategória kötött (K4.2, K4.3; F1 1d) */
 function stepNames(prof, type) {
   const t = cfg.types[type], all = t.steps.concat(t.closeSteps || []);
-  return `<fieldset class="field"><legend>A lépések neve</legend>
-    <p class="field-hint">A lépés neve átnevezhető. A kategória kötött, ezért a nézetek, az emlékeztetők és a mutatók az átnevezéstől nem változnak.</p>
+  return `<fieldset class="field"><legend>A lépések (státuszok) neve</legend>
+    <p class="field-hint">A lépés (státusz) neve átnevezhető. A kategória kötött, ezért a nézetek, az emlékeztetők és a mutatók az átnevezéstől nem változnak.</p>
     <div class="step-head" aria-hidden="true"><span></span><span>A lépés neve</span><span>Kategória, kötött</span></div>
     <ol class="step-rows names">${all.map((s, i) => `<li><span class="step-n" aria-hidden="true">${i + 1}.</span><div class="field f-name"><label class="sr-only" for="rn-${type}-${s.id}">A lépés neve, ${i + 1}. lépés</label><input class="text-input" type="text" id="rn-${type}-${s.id}" data-f="sl:${s.id}" data-k="rn-${type}-${s.id}" maxlength="80" autocomplete="off"></div>
       <p class="f-cat cat-fixed">${ico('lock')}<span><span class="sr-only">Kategória: </span>${esc(T.catWord[s.cat])}${s.cat === 'V' && s.wait ? ': ' + esc(s.wait) : ''}<span class="sr-only"> (kötött)</span></span></p></li>`).join('')}</ol></fieldset>`;
@@ -1523,9 +1925,10 @@ function stepLabels(type) { const f = ui.f, t = cfg.types[type], o = {}; t.steps
 /* Plusz adatok (K4.2): név és fajta; listánál az elemek */
 const kindWord = x => x.kind === 'yn' ? 'igen vagy nem' : x.kind === 'list' ? 'lista: ' + (x.opts || []).join(', ') : 'rövid szöveg';
 function plusEditor() {
-  const f = ui.f, E = f._pe || '';
-  return `<fieldset class="field"><legend>Plusz adatok</legend><p class="field-hint">Saját adat az ügyön, a fő adatok mellett: az új ügynél és az ügy adatainál tölthető ki, és a keresés is megtalálja.</p>
-    ${f.xlist.length ? `<ul class="plain-list plus-list">${f.xlist.map((x, i) => `<li><div class="li-main"><span><strong>${esc(x.label)}</strong> <span class="muted">${esc(kindWord(x))}</span></span><button class="btn-sm btn-icon" type="button" data-act="plus-del" data-i="${i}" data-k="plus-del-${i}">${ico('x')}${sr('Törlés: ' + x.label)}</button></div></li>`).join('')}</ul>` : '<p class="hint" style="margin-top:0">Most nincs plusz adat.</p>'}
+  const f = ui.f, E = f._pe || '', live = f.xlist.map((x, i) => [x, i]).filter(p => !p[0].archived), gone = f.xlist.filter(x => x.archived);
+  return `<fieldset class="field"><legend>Plusz adatok</legend><p class="field-hint">Saját adat az ügyön, a fő adatok mellett: az új ügynél és az ügy adatainál tölthető ki, és a keresés is megtalálja. A már kitöltött adat törléskor archiválódik: a régi ügyeken megmarad.</p>
+    ${live.length ? `<ul class="plain-list plus-list">${live.map(p => `<li><div class="li-main"><span><strong>${esc(p[0].label)}</strong> <span class="muted">${esc(kindWord(p[0]))}</span></span><button class="btn-sm btn-icon" type="button" data-act="plus-del" data-i="${p[1]}" data-k="plus-del-${p[1]}">${ico('x')}${sr('Törlés: ' + p[0].label)}</button></div></li>`).join('')}</ul>` : '<p class="hint" style="margin-top:0">Most nincs plusz adat.</p>'}
+    ${gone.length ? `<p class="hint plus-gone">Archiválva, mert régi ügyeken ki van töltve: ${esc(gone.map(x => x.label).join(', '))}. Új ügynél nem jelenik meg; a régi ügyeken a neve és az értéke megmarad. Ha ugyanígy újra felveszed, a régi értékek is visszakapcsolódnak.</p>` : ''}
     <div class="inline-add"><div class="field"><label class="field-label" for="f-xname">Új adat neve</label><input class="text-input" type="text" id="f-xname" data-f="xname" data-k="f-xname" maxlength="60" autocomplete="off" data-enter="plus-add"${E ? ' aria-invalid="true" aria-describedby="xname-err"' : ''}></div>
       <div class="field"><label class="field-label" for="f-xkind">Fajtája</label><select class="select" id="f-xkind" data-f="xkind" data-k="f-xkind" data-rerender="1">${cfg.plusKinds.map(o => `<option value="${o[0]}">${esc(o[1])}</option>`).join('')}</select></div>
       ${f.xkind === 'list' ? `<div class="field"><label class="field-label" for="f-xopts">A lista elemei, vesszővel</label><input class="text-input" type="text" id="f-xopts" data-f="xopts" data-k="f-xopts" maxlength="200" autocomplete="off" data-enter="plus-add"></div>` : ''}
@@ -1537,7 +1940,7 @@ function fixedBox(main) {
 }
 function variantEditor(prof, k, v) {
   const f = ui.f, areas = cfg.areaOrder[prof];
-  if (f._vinit !== k.type) { f._vinit = k.type; f.vname = v.name || k.name; f.varea = cfg.defaultArea[prof][k.type] || ''; f.vexams = (v.exams || cfg.profiles[prof].exams).slice(); f.xlist = JSON.parse(JSON.stringify(v.extra || [])); f.xkind = 'yn'; stepInit(prof, k.type); }
+  if (f._vinit !== prof + ':' + k.type) { f._vinit = prof + ':' + k.type; f.vname = v.name || k.name; f.varea = cfg.defaultArea[prof][k.type] || ''; f.vexams = (v.exams || cfg.profiles[prof].exams).slice(); f.xlist = JSON.parse(JSON.stringify(v.extra || [])); f.xkind = 'yn'; stepInit(prof, k.type); }
   const nOpen = T.state().cases.filter(c => c.profileId === prof && c.type === k.type && T.isOpen(c)).length, E = f._ve || {};
   return `<form class="set-form var-editor" data-form="variant" data-prof="${prof}" data-type="${k.type}" novalidate aria-labelledby="ve-h">
     <h4 class="form-h" id="ve-h" tabindex="-1" data-k="ve-h">${esc(k.name)}: a profil változata</h4>
@@ -1589,7 +1992,7 @@ function typeEditor(prof) {
       <div class="field"><label class="field-label" for="f-tarea">Melyik área munkalistáján álljanak az ügyei?</label><select class="select" id="f-tarea" data-f="tarea" data-k="f-tarea"${inv('area', 'tarea-err')}><option value="">Válaszd ki az áreát</option>${cfg.areaOrder[prof].map(a => `<option value="${a}">${esc(cfg.areas[a].name)}</option>`).join('')}</select>${err('area', 'tarea-err')}</div>
     </div>
     <p class="field-hint" style="margin-top:.5rem">Az összesítő is ennél az áreánál számolja az ügyeit. Új áreát a Beállítások főoldalán, az Áreák részben veszel fel.</p>
-    <fieldset class="field steps-field"${E.steps ? ' aria-describedby="tsteps-err"' : ''}><legend>Lépések</legend>
+    <fieldset class="field steps-field"${E.steps ? ' aria-describedby="tsteps-err"' : ''}><legend>Lépések (státuszok)</legend>
       <p class="field-hint">Abban a sorrendben, ahogy az ügy halad; az új ügy az első lépésben indul. Lépést csak kategóriával lehet menteni.</p>
       ${f.trows.length ? `<ol class="step-rows">${rows}</ol>` : ''}${err('steps', 'tsteps-err')}
       <button class="btn-sm" type="button" data-act="ty-row-add" data-k="ty-row-add">${ico('plus')}Lépés hozzáadása</button></fieldset>
@@ -1618,9 +2021,9 @@ function meetingItem(prof, k, open) {
 /* Az új megbeszélés áreája: az első, ahol még nem fut ügytípus; ennek híján a profil első áreája */
 function meetDefaultArea(prof) { const ids = cfg.areaOrder[prof]; return ids.find(a => !typesIn(prof, a).length) || ids.find(a => meetsIn(a).length) || ''; }
 function meetingForm(prof, k) {
-  const f = ui.f, S = k ? cfg.series[k] : null, v = k ? cfg.variants[prof][k] : null, docs = doctorsOf(prof), E = f._me || {};
-  if (f._minit !== (k || 'new')) {
-    f._minit = k || 'new'; f.mname = v ? v.name : ''; f.mflow = v ? v.flow : 'konz'; f.marea = v ? cfg.defaultArea[prof][k] : meetDefaultArea(prof);
+  const f = ui.f, S = k ? cfg.series[k] : null, v = k ? cfg.variants[prof][k] : null, docs = profPeople(prof, [], true), E = f._me || {};
+  if (f._minit !== prof + ':' + (k || 'new')) {
+    f._minit = prof + ':' + (k || 'new'); f.mname = v ? v.name : ''; f.mflow = v ? v.flow : 'konz'; f.marea = v ? cfg.defaultArea[prof][k] : meetDefaultArea(prof);
     f.mdow = S ? String(S.dow) : undefined; f.mevery = S ? String(S.every) : '1'; f.mpart = S ? S.participants.slice() : []; f.mdl = S ? S.deadline : '17:00';
     f.mrem = S ? (S.remind ? 'igen' : 'nem') : 'igen'; f.mremt = S && S.remind ? S.remind : '09:00';
     if (v) { f.xlist = JSON.parse(JSON.stringify(v.extra || [])); f.xkind = 'yn'; stepInit(prof, k); }
@@ -1638,7 +2041,7 @@ function meetingForm(prof, k) {
       : `<fieldset class="field"><legend>Hogyan működik?</legend><div class="chips">${Object.keys(cfg.flows).map(fl => `<label class="chip"><input type="radio" name="c-mflow" value="${fl}" data-f="mflow" data-rerender="1"><span>${esc(cfg.flows[fl].label)}</span></label>`).join('')}</div><p class="field-hint" style="margin-top:.5rem">${esc(cap(cfg.flows[f.mflow || 'konz'].about))}. A felvétel után kötött.</p></fieldset>`}
     <fieldset class="field"${E.dow ? ' aria-describedby="mdow-err"' : ''}><legend>Melyik napon?</legend><div class="chips">${cfg.weekdays.map((w, i) => `<label class="chip"><input type="radio" name="c-mdow" value="${w[0]}" data-f="mdow" data-rerender="1"${i === 0 ? ' data-k="mdow-first"' : ''}><span>${esc(w[1])}</span></label>`).join('')}</div>${err('dow', 'mdow-err')}</fieldset>
     <fieldset class="field"><legend>Milyen gyakran?</legend><div class="chips"><label class="chip"><input type="radio" name="c-mevery" value="1" data-f="mevery" data-rerender="1"><span>hetente</span></label><label class="chip"><input type="radio" name="c-mevery" value="2" data-f="mevery" data-rerender="1"><span>kéthetente</span></label></div></fieldset>
-    <fieldset class="field"><legend>Résztvevők <span class="opt">(nem kötelező)</span></legend><p class="field-hint">Az alkalom napirendjén látszik, kik ülnek a megbeszélésen.</p>${docs.length ? `<div class="checks">${docs.map(d => `<label class="check"><input type="checkbox" value="${esc(d[0])}" data-f="mpart" data-multi="1" data-k="mpart-${esc(d[0])}"><span>${esc(d[1])}</span></label>`).join('')}</div>` : '<p class="hint">A profilnak még nincs orvos tagja.</p>'}</fieldset>
+    ${docs.length ? peopleField('mpart', 'Résztvevők', docs, 'Írd be a nevét', true, { hint: 'Az alkalom napirendjén látszik, kik ülnek a megbeszélésen.' }) : '<fieldset class="field"><legend>Résztvevők <span class="opt">(nem kötelező)</span></legend><p class="hint">A profilnak még nincs orvos tagja.</p></fieldset>'}
     <div class="field"><label class="field-label" for="f-mdl">Bejelentési határidő: a megbeszélés előtti munkanap, eddig:</label><input class="text-input short" type="time" id="f-mdl" data-f="mdl" data-k="f-mdl" aria-describedby="mdl-h"${E.dl ? ' aria-invalid="true"' : ''}><span class="field-hint" id="mdl-h" style="margin-top:.375rem">Alapérték: a munkanap vége, 17:00. A hiányos bejelentés is a napirendre kerül, a hiány jelölésével.</span>${err('dl', 'mdl-err')}</div>
     ${(k ? v.flow : f.mflow) === 'konz' ? `<fieldset class="field"><legend>Emlékeztető a hiányos bejelentésről</legend><div class="chips"><label class="chip"><input type="radio" name="c-mrem" value="igen" data-f="mrem" data-rerender="1"><span>a határidő napján</span></label><label class="chip"><input type="radio" name="c-mrem" value="nem" data-f="mrem" data-rerender="1"><span>nincs</span></label></div>
       ${f.mrem === 'igen' ? `<div class="field"><label class="field-label" for="f-mremt">Hánykor?</label><input class="text-input short" type="time" id="f-mremt" data-f="mremt" data-k="f-mremt"></div>` : ''}<p class="field-hint" style="margin-top:.5rem">A bejelentőnek szól, ha a minimum adatokból hiányzik valami.</p></fieldset>`
@@ -1681,15 +2084,15 @@ const DUTY = { merge: ['Betegrekordok összevonása', 'Ha ugyanaz a beteg két r
   audit: ['Naplólekérdezés („Ki nézte meg?”)', 'A szülő vagy a hatóság kérdésére ő kérdezheti le, ki és mikor nyitotta meg egy beteg adatait.'] };
 function dutiesPage(prof) {
   const d = T.state().duties.find(x => x.id === prof) || { merge: [], audit: [] }, open = ui.panel && ui.panel.kind === 'duty' ? ui.panel.id : null, f = ui.f;
-  const mem = T.membersOf(prof).map(k => [k, cfg.users[k].name + ' (' + cfg.users[k].role + ')']);
+  const mem = people(T.membersOf(prof));
   return `<ul class="plain-list vars">${Object.keys(DUTY).map(kind => {
     const key = 'feladat:' + kind, cur = d[kind].filter(k => T.U(k).profile === prof);
-    if (open === kind && f._dinit2 !== kind) { f._dinit2 = kind; f.dmem = cur.slice(); }
+    if (open === kind && f._dinit2 !== prof + ':' + kind) { f._dinit2 = prof + ':' + kind; f.dmem = cur.slice(); }
     const act = ui.undo[key] ? undoHtml(key) : open === kind ? '' : `<button class="btn-sm" type="button" data-act="feladat-open" data-id="${kind}" data-k="mod:${kind}">Módosítás${sr(': ' + DUTY[kind][0])}</button>`;
-    const sel = (f.dmem || []).filter(k => mem.some(m => m[0] === k));
+    const sel = (f.dmem || []).filter(k => mem.some(m => m.v === k));
     return `<li class="var-item"><div class="li-main"><h3 class="type-name" id="fk-${kind}" tabindex="-1" data-k="fk-${kind}">${esc(DUTY[kind][0])}</h3><span class="member-act">${act}</span></div>
       <p class="li-sub">${esc(DUTY[kind][1])}</p><p class="li-sub"><strong>Kijelölve:</strong> ${cur.length ? esc(cur.map(userName).join(', ')) : 'senki'}</p>
-      ${open === kind ? `<form class="set-form" data-form="feladat" data-kind="${kind}" data-prof="${prof}" novalidate aria-label="${esc(DUTY[kind][0])}: kijelölés"><fieldset class="field"><legend>Kik végezhetik?</legend><div class="checks">${mem.map(m => `<label class="check"><input type="checkbox" value="${esc(m[0])}" data-f="dmem" data-multi="1" data-rerender="1" data-k="dmem-${esc(m[0])}"><span>${esc(m[1])}</span></label>`).join('')}</div></fieldset>
+      ${open === kind ? `<form class="set-form" data-form="feladat" data-kind="${kind}" data-prof="${prof}" novalidate aria-label="${esc(DUTY[kind][0])}: kijelölés">${peopleField('dmem', 'Kik végezhetik?', mem, 'Írd be a nevét', false)}
         <div class="form-actions"><button class="btn btn-primary" type="submit" data-k="fk-save">${ico('check')}${sel.length ? 'Kijelölöm: ' + esc(sel.map(userName).join(', ')) : 'Mentés: senki sincs kijelölve'}</button><button class="btn btn-quiet" type="button" data-act="feladat-close" data-id="${kind}">Mégse</button></div></form>` : ''}</li>`;
   }).join('')}</ul>`;
 }
@@ -1766,7 +2169,7 @@ function renderAll() {
   if (changed && ui.draftKey) flushDraft();
   ui.r = r;
   if (changed) {
-    ui.panel = null; ui.f = {}; ui.prompt = null; ui.decide = r.q.dontes ? r.args[0] : null; ui.conflict = null; ui.edit = null; ui.hist = false; ui.undo = {};
+    ui.panel = null; ui.f = {}; ui.prompt = null; ui.decide = r.q.dontes ? r.args[0] : null; ui.conflict = null; ui.edit = null; ui.hist = false; ui.undo = {}; ui.cb = null; ui.kids = {};
     ui.entered = location.hash; ui.dirtyNote = false; ui.draftKey = routeKey();
     loadUiDraft();
     if (r.name === 'csatolmany') { const c = T.Cs(r.args[0]), x = c && c.files[Number(r.args[1])]; if (x && ['write', 'read'].indexOf(T.caseAccess(c)) > -1 && T.mode() !== 'leader') T.ops.openFile(c.id, x.name); }
@@ -1775,8 +2178,23 @@ function renderAll() {
     if (r.name === 'naplo' && T.canAudit()) T.ops.auditQuery(r.args[0]);
     if (['sajat', 'ugyelet', 'osszesito', 'munkalistak', 'archivum'].indexOf(r.name) > -1) { T.rememberView(location.hash); ui.lastMain = r.name; }
   }
+  const nyit = changed && !anon && r.name === 'beallitasok' && r.q.nyit ? openFromLink(r) : null;
   document.getElementById('fejlec').innerHTML = anon ? anonHeader() : header();
   renderMain(changed);
+  if (nyit) { const el = document.querySelector('#tartalom [data-k="' + CSS.escape(nyit) + '"]'); if (el) { el.focus({ preventScroll: true }); el.scrollIntoView({ block: 'center' }); } }
+  /* A kiinduló ügy lenyitott listájából a teendő az ügy teendői közé visz: oda kerül a fókusz */
+  if (changed && !anon && r.name === 'ugy' && r.q.teendo) { const el = document.querySelector('#tartalom [data-k="tli:' + CSS.escape(r.q.teendo) + '"]'); if (el) { el.focus({ preventScroll: true }); el.scrollIntoView({ block: 'center' }); } }
+}
+/* A főoldal „Lépések és adatok” és „Új ügytípus” linkje a szerkesztőt nyitja meg: a változatét, a saját ügytípus lépéseiét, a megbeszélését, vagy az újat */
+function openFromLink(r) {
+  const k = r.q.nyit, prof = curProf(); if (!prof) return null;
+  if (r.args[0] === 'ugytipusok') {
+    if (k === 'uj') { ui.panel = { kind: 'type-new', prof }; ui.f = { trows: [{ label: '', cat: '', wait: '' }] }; return 'f-tname'; }
+    if (cfg.types[k] && cfg.types[k].custom && cfg.types[k].profile === prof) { ui.panel = { kind: 'ctype', id: k }; ui.f = {}; stepInit(prof, k); return 'rn-' + k + '-s1'; }
+    if (T.variant(prof, k) && T.variant(prof, k).on && !T.isMeet(k)) { ui.panel = { kind: 'variant', type: k }; ui.f = {}; return 'f-vname'; }
+  }
+  if (r.args[0] === 'megbeszelesek' && cfg.series[k] && cfg.series[k].profile === prof) { ui.panel = { kind: 'meeting', id: k }; ui.f = {}; return 'f-mname'; }
+  return null;
 }
 /* Az űrlapállapot és a látható kiválasztás mindig egyezik: a lenyíló lista látható (alapértelmezett) eleme
    akkor is az állapotba kerül, ha a felhasználó nem nyúlt hozzá; a beküldés mindig azt menti, ami látszik */
@@ -1819,7 +2237,9 @@ function renderMain(entered) {
   const sel = inMain && typeof a.selectionStart === 'number' ? [a.selectionStart, a.selectionEnd] : null;
   const y = window.scrollY;
   const v = ROUTES[ui.r.name];
+  ui.cbSpec = {}; ui.kidSeq = 0;
   main.innerHTML = v.apply(null, ui.r.args);
+  if (ui.cb && !ui.cbSpec[ui.cb.key]) ui.cb = null;
   restoreForm(main);
   document.title = ui.title + ' – Fonal';
   if (entered) { window.scrollTo(0, 0); const h1 = main.querySelector('h1'); if (h1 && ui.entered && document.activeElement !== document.getElementById('kereso')) h1.focus({ preventScroll: true }); }
@@ -1829,11 +2249,14 @@ function renderMain(entered) {
     if (el) { el.focus({ preventScroll: !ui.focus }); if (sel && el.setSelectionRange && !ui.focus) { try { el.setSelectionRange(sel[0], sel[1]); } catch (e) { /* nem szöveg */ } } }
   }
   ui.focus = null;
+  /* A kapcsolt ügy előnézete élő régió: az ügytípus választásakor a tartalma újra beíródik, hogy a képernyőolvasó felolvassa */
+  if (ui.sayPrev) { ui.sayPrev = false; const pv = document.getElementById('lk-prev'); if (pv && pv.innerHTML) { const h = pv.innerHTML; pv.innerHTML = ''; setTimeout(() => { if (pv.isConnected) pv.innerHTML = h; }, 80); } }
   stickyStrip();
   saveUiDraft();
 }
 /* A félbehagyott munka teljes állapota felhasználónként, a rekordhoz (az oldalhoz) kötve (bírálat 6.; K11.6) */
-function routeKey() { return (location.hash || '#/').split('?')[0]; }
+/* A kulcsban a profil is (a prototípus bírálata, 2.): a vezető profilváltásakor az előző profil félbehagyott szerkesztője nem töltődik be a másikba */
+function routeKey() { const prof = parseHash().q.profil; return (location.hash || '#/').split('?')[0] + (prof ? '?profil=' + prof : ''); }
 function flushDraft() { clearTimeout(saveUiDraft.tm); saveUiDraft(); }
 function saveUiDraft() {
   if (!T.me() || !ui.draftKey) return;
@@ -1875,6 +2298,7 @@ act.undo = el => {
   const key = el.getAttribute('data-key'), u = ui.undo[key]; if (!u) return;
   const res = T.undo(u.tx); delete ui.undo[key];
   if (res === 'conflict') toast('Közben más is módosította; a visszavonás nem lehetséges. Nézd meg az ügyet.');
+  else if (res === 'used') toast('Közben már használatba vették (például ügy indult benne), ezért nem vonható vissza.');
   else toast('Visszavonva.');
   ui.focus = 'act:' + key; renderMain();
   /* A beállítások sorainál a visszavonás után a sor „Módosítás” gombja, ennek híján a címsor kapja a fókuszt */
@@ -1885,6 +2309,12 @@ act.undo = el => {
 };
 act['task-done'] = el => { const key = el.getAttribute('data-key') || 'task:' + el.getAttribute('data-id'); const r = T.ops.closeTask(el.getAttribute('data-id')); withUndo(key, 'Lezárva.', r); toast('Kész.'); renderMain(); };
 act['task-take'] = el => { T.ops.assignTask(el.getAttribute('data-id'), T.me()); toast('Elvállaltad.'); renderMain(); };
+/* Kapcsolt ügyek: a lenyitó (a fókusz a gombon marad), a teendőből indítás űrlapja a sor alatt, és a meglévő ügy kapcsolása */
+act.kids = el => { const key = el.getAttribute('data-key'), def = el.getAttribute('data-def') === '1', cur = ui.kids[key] === undefined ? def : ui.kids[key]; ui.kids[key] = !cur; ui.focus = 'kids:' + key; renderMain(); };
+act['spawn-open'] = el => { const d = el.closest('details'); if (d) d.open = false; ui.panel = { kind: 'spawn', tid: el.getAttribute('data-id'), key: el.getAttribute('data-key') }; ui.f = {}; ui.cb = null; ui.prompt = null; ui.focus = 'lk-h'; renderMain(); };
+act['spawn-cancel'] = el => { const key = el.getAttribute('data-key'); ui.panel = null; ui.f = {}; ui.focus = 'tmenu:' + key; renderMain(); };
+act['relate-open'] = el => { ui.panel = { kind: 'relate', cid: el.getAttribute('data-id') }; ui.f = {}; ui.cb = null; ui.focus = 'f-relId'; renderMain(); if (!document.getElementById('f-relId')) { const b = document.querySelector('[data-k="rel-cancel"]'); if (b) b.focus(); } };
+act['relate-cancel'] = () => { const cid = ui.panel && ui.panel.cid; ui.panel = null; ui.f = {}; ui.focus = 'act:rel:' + cid; renderMain(); };
 act.next = el => {
   const id = el.getAttribute('data-id'), key = el.getAttribute('data-key'), c = T.Cs(id), n = nextOf(c);
   if (!n) return;
@@ -1916,7 +2346,9 @@ act.panel = el => {
   ui.focus = kind === 'kiutal' ? 'f-mit' : kind === 'ward' ? (ui.panel.pid ? 'f-wmit' : 'f-wpid') : kind === 'taj' ? 'f-taj' : kind === 'name' ? 'f-pname' : kind === 'task' ? 'f-ttext' : 'panel-h';
   renderMain();
 };
-act['panel-close'] = () => { ui.panel = null; ui.f = {}; ui.focus = 'h1'; renderMain(); };
+act['panel-close'] = () => { const ag = ui.panel && ui.panel.from === 'agenda'; ui.panel = null; ui.f = {}; ui.focus = ag ? 'agenda-new' : 'h1'; renderMain(); };
+/* Új eset a napirendről: az alkalom előre kitöltve, a beteget a kereső mezőben választod */
+act['agenda-new'] = el => { ui.panel = { kind: 'new-case', type: el.getAttribute('data-type'), pid: null, fixed: false, meeting: el.getAttribute('data-meeting'), from: 'agenda' }; ui.f = {}; ui.cb = null; ui.focus = 'f-pq'; renderMain(); };
 act['new-case'] = el => {
   const d = el.closest('details'); if (d) d.open = false;
   ui.panel = { kind: 'new-case', type: el.getAttribute('data-type'), pid: el.getAttribute('data-pid') || null, fixed: !!el.getAttribute('data-pid') }; ui.f = {};
@@ -1930,7 +2362,7 @@ act['edit-cancel'] = () => { ui.edit = null; ui.f = {}; ui.conflict = null; ui.f
 act.decide = el => { ui.decide = el.getAttribute('data-id'); ui.f = {}; ui.focus = 'f-dec'; renderMain(); };
 act['decide-cancel'] = () => { ui.decide = null; ui.f = {}; ui.conflict = null; ui.focus = 'decide'; renderMain(); };
 act['row-add'] = () => { ui.f.rows = (ui.f.rows || []).concat([{ text: '', owner: '', due: '', spawn: '' }]); ui.focus = 'r-t-' + (ui.f.rows.length - 1); renderMain(); };
-act['row-del'] = el => { ui.f.rows.splice(Number(el.getAttribute('data-i')), 1); ui.focus = 'row-add'; renderMain(); };
+act['row-del'] = el => { ui.f.rows.splice(Number(el.getAttribute('data-i')), 1); Object.keys(ui.f).filter(k => /^_(q|cbE):rows\./.test(k)).forEach(k => { delete ui.f[k]; }); ui.focus = 'row-add'; renderMain(); };
 act.triage = el => { T.ops.triage(el.getAttribute('data-id'), el.getAttribute('data-val')); toast(el.getAttribute('data-val') === 'tudomásul' ? 'Áttéve: csak tudomásul vesszük.' : 'Áttéve: megbeszéljük.'); renderMain(); };
 act.ack = el => { const id = el.getAttribute('data-id'); const r = T.ops.acknowledge(id); withUndo('case:' + id, 'Tudomásul vették; elintézve.', r); toast('Elintézve.'); renderMain(); };
 act.attach = el => { const d = el.closest('details'); if (d) d.open = false; T.ops.attach(el.getAttribute('data-id'), el.getAttribute('data-name')); toast('Csatolva: ' + el.getAttribute('data-name')); ui.focus = 'attach'; renderMain(); };
@@ -1994,7 +2426,7 @@ act['member-remove'] = el => {
 act['area-open'] = el => { const id = el.getAttribute('data-id'); setPanel('area', id, null, 'f-aname'); };
 act['area-close'] = el => { const id = el.getAttribute('data-id'); setClose(id === 'new' ? 'area-new' : 'mod:' + id); };
 act['var-on'] = el => {
-  const type = el.getAttribute('data-type'), prof = el.getAttribute('data-prof'), r = T.ops.setVariantOn(prof, type, true);
+  const type = el.getAttribute('data-type'), prof = el.getAttribute('data-prof'), r = T.ops.setVariantOn(prof, type, true, el.getAttribute('data-area'));
   if (!r || r.denied) { toast('Ügytípust a profil adminja kapcsol be.'); return; }
   withUndo('var:' + type, 'Bekapcsolva.', r); toast('Bekapcsolva: ' + vlabel(prof, type) + '. Az „Új ügy” menüben már választható; az ügyei a(z) ' + T.areaName(cfg.defaultArea[prof][type]) + ' munkalistáján állnak.'); renderMain();
 };
@@ -2014,13 +2446,23 @@ act['exam-add'] = () => {
 act['exam-del'] = el => { ui.f.vexams.splice(Number(el.getAttribute('data-i')), 1); ui.focus = 'f-vexam'; renderMain(); };
 act['plus-add'] = () => {
   const f = ui.f, name = (f.xname || '').trim(), kind = f.xkind || 'yn', opts = (f.xopts || '').split(',').map(x => x.trim()).filter(Boolean); f._pe = '';
+  const old = f.xlist.find(x => x.archived && T.norm(x.label) === T.norm(name));
   if (!name) f._pe = 'Írd be az adat nevét.';
-  else if (f.xlist.some(x => T.norm(x.label) === T.norm(name))) f._pe = 'Ilyen nevű plusz adat már van.';
-  else if (kind === 'list' && opts.length < 2) f._pe = 'A listához adj meg legalább két elemet, vesszővel elválasztva.';
-  if (f._pe) { ui.focus = !name || kind !== 'list' || opts.length >= 2 ? 'f-xname' : 'f-xopts'; renderMain(); return; }
+  else if (f.xlist.some(x => !x.archived && T.norm(x.label) === T.norm(name))) f._pe = 'Ilyen nevű plusz adat már van.';
+  /* Az archivált, azonos nevű mező a régi azonosítójával tér vissza, így a régi ügyek értékei is visszakapcsolódnak (a prototípus bírálata, 6.) */
+  else if (old && old.kind !== kind) f._pe = 'Ilyen nevű plusz adat korábban már volt, más fajtával (' + kindWord(old) + '), és régi ügyeken ki van töltve. Válaszd ugyanezt a fajtát, vagy adj más nevet.';
+  else if (!old && kind === 'list' && opts.length < 2) f._pe = 'A listához adj meg legalább két elemet, vesszővel elválasztva.';
+  if (f._pe) { ui.focus = !name || old || kind !== 'list' || opts.length >= 2 ? 'f-xname' : 'f-xopts'; renderMain(); return; }
+  if (old) { delete old.archived; if (kind === 'list' && opts.length) old.opts = Array.from(new Set((old.opts || []).concat(opts))); f.xname = ''; f.xopts = ''; ui.focus = 'f-xname'; renderMain(); toast('Visszakerült: ' + old.label + '; a régi ügyeken kitöltött értékei is. A mentéssel lesz érvényes.'); return; }
   f.xlist = f.xlist.concat([Object.assign({ id: 'x' + Date.now().toString(36), label: name, kind }, kind === 'list' ? { opts } : {})]); f.xname = ''; f.xopts = ''; ui.focus = 'f-xname'; renderMain();
 };
-act['plus-del'] = el => { ui.f.xlist.splice(Number(el.getAttribute('data-i')), 1); ui.focus = 'f-xname'; renderMain(); };
+/* A már kitöltött plusz adat törléskor archiválódik; a kitöltetlen törlődik */
+act['plus-del'] = el => {
+  const form = el.closest('form'), prof = form.getAttribute('data-prof'), type = form.getAttribute('data-type') || form.getAttribute('data-id'), i = Number(el.getAttribute('data-i')), x = ui.f.xlist[i];
+  if (x && T.plusUsed(prof, type, x.id)) { x.archived = true; toast('Archiválva: ' + x.label + '. Új ügynél nem jelenik meg; a régi ügyeken megmarad. A mentéssel lesz érvényes.'); }
+  else ui.f.xlist.splice(i, 1);
+  ui.focus = 'f-xname'; renderMain();
+};
 act['ctype-open'] = el => { const id = el.getAttribute('data-id'); ui.panel = { kind: 'ctype', id }; ui.f = {}; stepInit(curProf(), id); ui.focus = 'rn-' + id + '-s1'; renderMain(); };
 act['ctype-close'] = el => setClose('mod:' + el.getAttribute('data-id'));
 act['meet-open'] = el => { const id = el.getAttribute('data-id'); setPanel('meeting', id, null, 'f-mname'); };
@@ -2108,7 +2550,7 @@ forms['type-new'] = form => {
     renderMain(); return;
   }
   const r = T.ops.createType({ profile: prof, name, area: f.tarea, steps });
-  if (!r || r.denied) { toast('Ügytípust a profil adminja hozhat létre.'); return; }
+  if (!r || r.denied) { toast((r && r.err) || 'Ügytípust a profil adminja hozhat létre.'); return; }
   ui.panel = null; ui.f = {}; toast('Létrehozva: ' + name + '. Az „Új ügy” menüben már választható.'); ui.focus = 'ty-' + r.res; renderMain();
 };
 /* Beállítások: szerepkör (K9.9) */
@@ -2208,7 +2650,7 @@ forms['new-case'] = () => {
   if (type === 'vizsgalat') o.data = { exam: f.exam || 'MR', region: f.region || '', from: f.from || '', to: f.to || '', anesthesia: yn(f.anesthesia) };
   if (type === 'labor') o.data = { test: f.test || '', requestedOn: f.requestedOn || '', expectedOn: f.expectedOn || '', notify: f.notify || '' };
   if (type === 'engedely') { o.data = { drug: f.drug || '', indication: f.indication || '', reqType: f.reqType || 'új', offLabel: yn(f.offLabel), sentOn: f.sentOn || '', decidedOn: f.decidedOn || '', expiresOn: f.expiresOn || '' }; o.step = f.step || 'elok'; o.initial = o.step !== 'elok'; }
-  if (T.isMeet(type)) { o.meeting = f.meeting || null; o.data = { question: f.question || '', region: f.region || '', summary: f.summary || '' }; if (T.flowOf(type) === 'd2t') o.due = f.due || null; if (f.link) o.links = [{ id: f.link, rel: 'kapcsolódó ügy', back: 'konzíliumi eset' }]; }
+  if (T.isMeet(type)) { o.meeting = f.meeting || null; o.data = { question: f.question || '', region: f.region || '', summary: f.summary || '' }; if (T.flowOf(type) === 'd2t') o.due = f.due || null; if (f.link) o.relate = f.link; }
   if (type === 'atadas') o.data = { institution: f.institution || '', recvDoctor: f.recvDoctor || '', contact: f.contact || '', plannedOn: f.plannedOn || '', coordinator: owners[0], docReady: false };
   if (cfg.types[type].custom) o.due = f.due || null;
   const plus = plusData(T.U(T.me()).profile, type, f); if (Object.keys(plus).length) o.data = Object.assign(o.data || {}, plus);
@@ -2216,11 +2658,11 @@ forms['new-case'] = () => {
     if (f.owner === 'duty') { const due = whenValue('when'); f._e2when = !due ? 'Válaszd ki, mikorra kell.' : due === 'hiányos' ? 'Add meg a napot és az időt.' : ''; if (f._e2when) { ui.focus = due === 'hiányos' ? 'f-whenD' : 'when-first'; renderMain(); return; } const r = T.ops.assignDuty({ patientId: p.pid, text: f.what.trim(), due }); ui.panel = null; ui.f = {}; withUndo('duty:' + r.res, 'Kiutalva.', r); toast('Kiutalva az ügyeletnek.'); ui.focus = 'h1'; renderMain(); return; }
     o.title = f.what.trim(); o.due = f.due || null;
   }
-  const r = T.ops.createCase(o), c = T.Cs(r.res);
+  const r = T.ops.createCase(o), c = T.Cs(r.res), ag = p.from === 'agenda';
   ui.panel = null; ui.f = {};
-  const mine = c.owners.indexOf(T.me()) > -1;
-  toast(mine || !c.owners.length ? 'Mentve: ' + T.caseTitle(c) + (c.owners.length ? '.' : '; felelős még nincs.') : 'Kiadva: ' + c.owners.map(userName).join(', ') + ' viszi. A figyelt ügyeid között követed.');
-  ui.focus = 'h1'; renderMain();
+  const mine = c.owners.indexOf(T.me()) > -1, when = c.meeting ? ' Alkalom: ' + D.dayName(c.meeting) + ', ' + fmtDate(c.meeting) + '.' : '';
+  toast(mine || !c.owners.length ? 'Mentve: ' + T.caseTitle(c) + (c.owners.length ? '.' : '; felelős még nincs.') + when : 'Kiadva: ' + c.owners.map(userName).join(', ') + ' viszi. A figyelt ügyeid között követed.' + when);
+  ui.focus = ag ? 'agenda-new' : 'h1'; renderMain();
 };
 forms.kiutal = () => {
   const p = ui.panel, f = ui.f, text = (f.mit || '').trim(), due = whenValue('mikor');
@@ -2291,6 +2733,31 @@ function submitDecision(id) {
   ui.focus = 'h1'; renderMain();
 }
 forms.decide = form => submitDecision(form.getAttribute('data-id'));
+/* Kapcsolt ügy a teendőből: egy művelet, egy visszavonással; a felhasználó a helyén marad (a terv 3.4) */
+forms.spawn = () => {
+  const pn = ui.panel, f = ui.f, t = pn ? T.Tk(pn.tid) : null, c = t ? T.Cs(t.caseId) : null; if (!t || !c) return;
+  const type = f.ltype, prof = c.profileId, title = (f.ltitle || '').trim();
+  f._eType = ''; f._eOwner = ''; f._err = '';
+  if (!type) { f._eType = 'Válaszd ki, milyen ügy lesz belőle.'; ui.focus = 'lk-type-first'; renderMain(); return; }
+  if (type === 'altalanos' && !title) { f._err = 'Írd be röviden, mit kell tenni.'; ui.focus = 'f-ltitle'; renderMain(); return; }
+  if (f.lowner === 'other' && !f.lownerId) { f._eOwner = 'Válaszd ki, kinek adod.'; ui.focus = 'f-lownerId'; renderMain(); return; }
+  const owners = spawnOwners(t, c, f);
+  const r = T.ops.spawnFromTask(t.id, { type, title: T.isMeet(type) || !T.titleFromTask(type) ? '' : title, due: f.ldue || null, owners, data: spawnData(type, f, prof, owners), meeting: T.isMeet(type) ? f.meeting || null : null });
+  if (!r || r.denied) { toast('Ebből a teendőből most nem indítható kapcsolt ügy.'); return; }
+  const n = T.Cs(r.res), an = T.areaName(n.areaId);
+  ui.panel = null; ui.f = {};
+  withUndo(pn.key, (T.spawnClosesTask ? 'Kapcsolt ügy lett belőle: ' : 'Kapcsolt ügy indult belőle: ') + T.caseTitle(n) + ' (' + typeName(n) + ').', r, 'working', { href: '#/ugy/' + n.id, name: T.caseTitle(n) });
+  toast('Kapcsolt ügy indult ' + art(an) + ' ' + an + ' munkalistáján' + (n.owners.length ? ', ' + n.owners.map(userName).join(', ') + ' viszi' : ', felelős nélkül') + '.' + (T.spawnClosesTask ? ' A teendő kész.' : ''));
+  renderMain();
+};
+forms.relate = form => {
+  const id = form.getAttribute('data-id'), f = ui.f;
+  if (!f.relId) { f._eRel = 'Válaszd ki az ügyet a listából.'; ui.focus = 'f-relId'; renderMain(); return; }
+  const x = T.Cs(f.relId), r = T.ops.relate(id, f.relId);
+  if (!r || r.denied) { toast('Ezt az ügyet nem kapcsolhatod.'); return; }
+  ui.panel = null; ui.f = {}; withUndo('rel:' + id, 'Kapcsolva: ' + T.caseTitle(x) + '.', r);
+  toast('Kapcsolva: ' + T.caseTitle(x) + '. Mindkét ügy listájában ott a másik.'); renderMain();
+};
 forms.task = form => {
   const id = form.getAttribute('data-id'), f = ui.f;
   if (!(f.ttext || '').trim()) { f._err = 'Írd be röviden, mit kell tenni.'; ui.focus = 'f-ttext'; renderMain(); return; }
@@ -2321,6 +2788,7 @@ document.addEventListener('click', e => {
 document.addEventListener('toggle', e => { const d = e.target; if (!d.matches || !d.matches('details.menu') || !d.open) return; document.querySelectorAll('details.menu[open]').forEach(o => { if (o !== d) o.open = false; }); }, true);
 document.addEventListener('keydown', e => {
   if (e.key !== 'Escape') return;
+  if (e.target.hasAttribute && e.target.hasAttribute('data-cb')) return;
   const open = document.querySelectorAll('details.menu[open]');
   if (open.length) { open.forEach(d => { d.open = false; d.querySelector('summary').focus(); }); return; }
   if (ui.prompt) { act['prompt-cancel'](); return; }
@@ -2329,6 +2797,7 @@ let draftTm = null;
 document.addEventListener('input', e => {
   const el = e.target;
   if (el.id === 'kereso') { renderSearch(); return; }
+  if (el.hasAttribute('data-cb')) { cbInput(el); return; }
   if (el.hasAttribute('data-arch')) { ui.arch[el.getAttribute('data-arch')] = el.value; ui.archLimit = 60; clearTimeout(draftTm); draftTm = setTimeout(() => { ui.focus = el.getAttribute('data-k'); renderMain(); }, 250); return; }
   if (el.hasAttribute('data-row')) { ui.f.rows[Number(el.getAttribute('data-row'))][el.getAttribute('data-rf')] = el.value; clearTimeout(saveUiDraft.tm); saveUiDraft.tm = setTimeout(saveUiDraft, 300); return; }
   /* Az ügytípus-szerkesztő lépéssorai: a kategória választása újrarajzol (a várakozó lépésnél jön a „Kire várunk?”), és eltünteti a sor kategóriahibáját */
@@ -2349,6 +2818,9 @@ document.addEventListener('input', e => {
   else if (el.type === 'checkbox') ui.f[name] = el.checked;
   else if (el.type === 'radio') { if (el.checked) ui.f[name] = el.value; }
   else ui.f[name] = el.value;
+  /* Az alkalomválasztó: a legközelebbiek egyike, vagy a „későbbi alkalom” listájából */
+  const mk = el.getAttribute('data-meet'); if (mk) { const v = ui.f[mk + 'Chip']; ui.f[mk] = v === 'later' ? ui.f[mk + 'Later'] : v; }
+  if (name === 'ltype') { ui.f._eType = ''; ui.sayPrev = true; }
   const dk = el.getAttribute('data-draft'); if (dk) { clearTimeout(draftTm); draftTm = setTimeout(() => T.ops.draft(dk, el.value), 300); }
   if (name === 'mit') { const pv = document.getElementById('prev-mit'); if (pv) { pv.textContent = el.value.trim() ? '„' + el.value.trim() + '”' : '(még üres)'; pv.className = el.value.trim() ? '' : 'empty-val'; } }
   if (name === 'wmit') { const pv = document.getElementById('prev-wmit'); if (pv) { pv.textContent = el.value.trim() ? '„' + el.value.trim() + '”' : '(még üres)'; pv.className = el.value.trim() ? '' : 'empty-val'; } }
@@ -2378,7 +2850,44 @@ function wlFilterChange(el) {
   history.replaceState(null, '', ui.entered); ui.r = parseHash(); renderMain();
 }
 document.addEventListener('keydown', e => { const el = e.target; if (e.key !== 'Enter' || !el.getAttribute || !el.getAttribute('data-enter')) return; const fn = act[el.getAttribute('data-enter')]; if (fn) { e.preventDefault(); fn(el, e); } });
-document.addEventListener('submit', e => { const form = e.target; const k = form.getAttribute('data-form'); if (!k) return; e.preventDefault(); if (forms[k]) forms[k](form); });
+document.addEventListener('submit', e => { const form = e.target; const k = form.getAttribute('data-form'); if (!k) return; e.preventDefault(); if (!cbCheck(form)) return; if (forms[k]) forms[k](form); });
+/* A személyválasztó billentyűi (WAI-ARIA combobox): le- és felnyíl, Enter, Esc, Tab; Alt+le nyit */
+document.addEventListener('keydown', e => {
+  const el = e.target; if (!el.hasAttribute || !el.hasAttribute('data-cb')) return;
+  const key = el.getAttribute('data-cb'), spec = ui.cbSpec[key]; if (!spec) return;
+  const open = !!(ui.cb && ui.cb.key === key);
+  if (e.key === 'ArrowDown') { e.preventDefault(); if (!open) cbOpen(key); else if (!e.altKey) cbMove(key, 1); return; }
+  if (e.key === 'ArrowUp') { e.preventDefault(); if (!open) cbOpen(key, true); else cbMove(key, -1); return; }
+  if (e.key === 'Enter') {
+    if (!open) return;
+    const vis = cbVisible(spec, cbQ(key)), o = vis.find(x => x.v === ui.cb.act);
+    if (o) { e.preventDefault(); cbPick(key, o.v); }
+    return;
+  }
+  if (e.key === 'Escape') {
+    e.preventDefault(); e.stopPropagation();
+    if (open) { cbClose(key); return; }
+    /* Csukott listánál az Esc elveti a beírt, még nem választott szöveget */
+    if (cbQ(key)) { cbQ(key, ''); delete ui.f['_cbE:' + key]; ui.focus = spec.id; renderMain(); cbFocusEnd(spec.id); }
+    return;
+  }
+  if (e.key === 'Tab' && open) cbClose(key);
+});
+document.addEventListener('mousedown', e => { if (e.target.closest && e.target.closest('.cb-list, [data-cb-toggle]')) e.preventDefault(); });
+document.addEventListener('click', e => {
+  const t = e.target.closest ? e.target : null; if (!t) return;
+  const opt = t.closest('[data-cb-opt]'); if (opt) { cbPick(opt.getAttribute('data-cb-opt'), opt.getAttribute('data-v')); return; }
+  const tg = t.closest('[data-cb-toggle]'); if (tg) { const key = tg.getAttribute('data-cb-toggle'), spec = ui.cbSpec[key]; if (!spec) return; const input = document.getElementById(spec.id); if (input) input.focus(); if (ui.cb && ui.cb.key === key) cbClose(key); else cbOpen(key); return; }
+  const del = t.closest('[data-cb-del]'); if (del) { cbRemove(del.getAttribute('data-cb-del'), del.getAttribute('data-v')); return; }
+  /* Kattintásra lenyílik; ha már van választott név, a szöveg kijelölődik, így a gépelés lecseréli */
+  const inp = t.closest('input[data-cb]'); if (inp && !(ui.cb && ui.cb.key === inp.getAttribute('data-cb'))) { const k = inp.getAttribute('data-cb'), sp = ui.cbSpec[k]; cbOpen(k); if (sp && !sp.multi && cbSel(sp, k) && !cbQ(k)) inp.select(); }
+});
+document.addEventListener('focusout', e => {
+  const el = e.target; if (!el.hasAttribute || !el.hasAttribute('data-cb')) return;
+  const wrap = el.closest('[data-cb-wrap]'), to = e.relatedTarget;
+  if (to && wrap && wrap.contains(to)) return;
+  cbClose(el.getAttribute('data-cb'));
+});
 document.addEventListener('keydown', e => {
   const input = document.getElementById('kereso'), box = document.getElementById('talalatok'); if (!input || !box) return;
   if (e.target === input) {

@@ -95,11 +95,12 @@ function writeLS(k, v) { try { if (LS) LS.setItem(k, v); else memStore[k] = v; }
 function readSS() { try { return JSON.parse(window.sessionStorage.getItem(SKEY) || 'null'); } catch (e) { return ses; } }
 function writeSS(v) { ses = v; try { window.sessionStorage.setItem(SKEY, JSON.stringify(v)); } catch (e) { /* csak memóriában */ } }
 /* A korábban mentett állapotban az új gyűjtemények még hiányozhatnak */
-function migrate(s) { ['types', 'accounts', 'admins', 'areas', 'variants', 'series', 'members', 'duties'].forEach(k => { if (!Array.isArray(s[k])) s[k] = []; }); return s; }
-/* A 2026-11-19-i bővítés óta a profil beállításai is az állapotban vannak (5. változat); a korábbi mentés helyett a szabad próba indul */
+function migrate(s) { ['types', 'accounts', 'admins', 'areas', 'variants', 'series', 'members', 'duties', 'rels'].forEach(k => { if (!Array.isArray(s[k])) s[k] = []; }); return s; }
+/* A 2026-11-19-i bővítés óta a profil beállításai is az állapotban vannak (5. változat), este óta a kapcsolatok is egy rekordban (6. változat);
+   a korábbi mentés helyett a szabad próba indul */
 function load() {
   const raw = readLS(KEY);
-  if (raw) { try { const s = JSON.parse(raw); if (s && s.v === 5) { st = migrate(s); applyState(); return; } } catch (e) { /* újraépítjük */ } }
+  if (raw) { try { const s = JSON.parse(raw); if (s && s.v === 6) { st = migrate(s); applyState(); return; } } catch (e) { /* újraépítjük */ } }
   st = BT.worlds.base(); applyState(); tick(true); persist();
 }
 function persist() { writeLS(KEY, JSON.stringify(st)); }
@@ -317,6 +318,34 @@ function caseLate(c) {
 }
 const taskOpen = t => !t.done;
 const taskLate = t => taskOpen(t) && !!t.due && t.due < today();
+
+/* ---------------- Kapcsolt ügyek (K4.11) ----------------
+   Egy kapcsolatrekord: a két ügy és a fajta. Az ebből indult, a hosszabbítás, az új kérelem és az új előjegyzés kiinduló ügye a „from”;
+   a kézi kapcsolat („kapcsolódik”) egyenrangú, kiinduló ügye nincs. A kapcsolat nem ad jogot a másik ügyhöz: mindkét ügyet a saját
+   jogosultsága védi (K9), ezért a kapcsolatból csak az látszik és csak az számol, amit a néző láthat; a felület ezt a szűrt listát kapja (K9.11). */
+const REL_WORD = { ebbol: 'ebből indult', hosszabbitas: 'hosszabbítás', ujkerelem: 'új kérelem', ujeloj: 'új előjegyzés', kapcsolodik: 'kapcsolódik' };
+const relWord = r => REL_WORD[r.kind] || r.kind;
+const relBetween = (a, b) => st.rels.find(r => (r.from === a && r.to === b) || (r.from === b && r.to === a)) || null;
+/* A kiinduló ügy: amelyikből az ügy indult (teendőből vagy folytatásként) */
+function originOf(c, uid, md) {
+  const r = st.rels.find(x => x.kind !== 'kapcsolodik' && x.to === c.id), x = r ? Cs(r.from) : null;
+  if (!x) return null;
+  const acc = caseAccess(x, uid, md);
+  return acc === 'none' ? null : { rel: r, c: x, acc, word: relWord(r) };
+}
+/* A kapcsolt ügyek: amelyek ebből indultak, és a kézzel kapcsoltak; a nyitottak elöl, dátum szerint, a lezártak a végén */
+function linkedOf(c, uid, md) {
+  const dk = x => caseDate(x) || '9999-12-31';
+  return st.rels.filter(r => r.from === c.id || (r.kind === 'kapcsolodik' && r.to === c.id))
+    .map(r => { const x = Cs(r.from === c.id ? r.to : r.from); return x ? { rel: r, c: x, acc: caseAccess(x, uid, md), word: relWord(r) } : null; })
+    .filter(o => o && o.acc !== 'none')
+    .sort((a, b) => (!!a.c.closed - !!b.c.closed) || (a.c.closed ? (b.c.closed.at > a.c.closed.at ? 1 : -1) : dk(a.c) < dk(b.c) ? -1 : dk(a.c) > dk(b.c) ? 1 : 0));
+}
+/* Az ügy nyitott teendői, amelyeket a néző láthat; határidő szerint, a lejártak így elöl */
+function openTasksOf(c, uid, md) {
+  return st.tasks.filter(t => t.caseId === c.id && !t.done && taskAccess(t, uid, md) !== 'none')
+    .sort((a, b) => ((a.due || '9') < (b.due || '9') ? -1 : (a.due || '9') > (b.due || '9') ? 1 : 0));
+}
 
 /* ---------------- Helyettesítés (K5.17) ---------------- */
 function absenceOf(uid, day) { day = day || today(); return st.absences.find(a => a.user === uid && a.from <= day && a.to >= day) || null; }
@@ -577,9 +606,23 @@ function tx(label, fn) {
   txs[t.id] = t; applyState(); tick(); persist(); emit('tx');
   return { tx: t.id, res };
 }
+/* A visszavonás nem hagyhat árva hivatkozást (a prototípus bírálata, 3. pont): ha az ebben a lépésben létrehozott megbeszélésre, áreára vagy ügytípusra
+   közben más már hivatkozik (ügy indult benne, változat került rá), a létrehozás nem vonható vissza */
+function createdInUse(t) {
+  const own = {}; t.ch.forEach(x => { if (x.before === null && !x.obj) own[x.coll + ':' + x.id] = 1; });
+  const other = (coll, o) => !own[coll + ':' + o.id];
+  return t.ch.some(x => {
+    if (x.obj || x.before !== null) return false;
+    const o = st[x.coll].find(y => y.id === x.id); if (!o) return false;
+    if (x.coll === 'variants' || x.coll === 'series' || x.coll === 'types') { const k = x.coll === 'variants' ? o.type : o.id; return st.cases.some(c => c.type === k && other('cases', c)); }
+    if (x.coll === 'areas') return st.cases.some(c => c.areaId === o.id && other('cases', c)) || st.variants.some(v => v.area === o.id && other('variants', v)) || st.types.some(y => y.area === o.id && other('types', y));
+    return false;
+  });
+}
 function undo(id) {
   const t = txs[id]; if (!t) return 'gone';
   for (const x of t.ch) { if (x.obj) { if (JSON.stringify(st[x.obj]) !== x.after) return 'conflict'; continue; } const o = st[x.coll].find(y => y.id === x.id); if (o && x.afterVer !== null && o.ver !== x.afterVer) return 'conflict'; }
+  if (createdInUse(t)) return 'used';
   t.ch.slice().reverse().forEach(x => {
     if (x.obj) { st[x.obj] = clone(x.before); return; }
     const arr = st[x.coll], i = arr.findIndex(y => y.id === x.id);
@@ -686,8 +729,9 @@ function areaFor(type, profileId, uid) {
   return cfg.defaultArea[profileId][type];
 }
 const t0 = type => cfg.types[type];
-ops.createCase = o => tx('Új ügy', () => {
-  const uid = me(), prof = U(uid).profile, type = o.type, id = newId('k');
+/* Az új ügy; a kapcsolt ügy indításakor is ez fut (o.rel: a kiinduló ügy és a fajta; o.relate: a bejelentés „Hivatkozás egy másik ügyre” mezője) */
+function createCaseRaw(o) {
+  const uid = me(), prof = o.profile || U(uid).profile, type = o.type, id = newId('k');
   const area = o.area || areaFor(type, prof, uid), a = cfg.areas[area];
   /* Az új ügy az área alapértelmezett felelősét kapja; ha nincs, felelős nélkül marad (a bírálat 1. pontja).
      A megbeszélésre bejelentett esetért a bejelentő felel (A fejezet, 6. rész). */
@@ -698,6 +742,7 @@ ops.createCase = o => tx('Új ügy', () => {
   if (type === 'vizsgalat' && isDoctor(uid) && owners.indexOf(uid) === -1) watchers.push(uid);
   /* Aki másnak ad ügyet, figyelőként követi; a változást a „Figyelt ügyeim” között látja, külön értesítés nélkül */
   if (o.watchSelf && owners.indexOf(uid) === -1 && watchers.indexOf(uid) === -1) watchers.push(uid);
+  (o.watchers || []).forEach(w => { if (w && owners.indexOf(w) === -1 && watchers.indexOf(w) === -1) watchers.push(w); });
   const pid = o.patientId || null;
   const adm = pid ? openAdmission(pid) : null;
   let appearance = null, started = adm ? 'fekvő' : 'járó', note = '';
@@ -712,17 +757,20 @@ ops.createCase = o => tx('Új ügy', () => {
   const step = o.step || t.steps[0].id;
   const c = {
     id, patientId: pid, profileId: prof, areaId: area, type, title: o.title || '', step, owners, watchers, due: o.due || null,
-    his: o.his || [], startedAs: started, appearanceId: appearance, data: o.data || {}, note: o.note || '', links: o.links || [], prev: o.prev || null,
+    his: o.his || [], startedAs: started, appearanceId: appearance, data: o.data || {}, note: o.note || '', prev: o.prev || null,
     closed: null, waitSince: stepDef({ type }, step) && stepDef({ type }, step).cat === 'V' ? today() : null, created: { at: now(), by: uid },
     history: [], contacts: [], files: [], labels: [], meeting: t.meeting ? (o.meeting || nextMeeting(t.meeting)) : null, triage: t.meeting ? 'megbeszéljük' : null,
     decision: '', participants: [], discussedAt: null, decidedAt: null
   };
-  c.history.push({ at: now(), by: uid, text: (o.initial ? 'Felvéve a tényleges lépésben (kezdő feltöltés): ' : 'Felvéve, lépés: ') + stepLabel(c, step) + note });
+  c.history.push({ at: now(), by: uid, text: (o.initial ? 'Felvéve a tényleges lépésben (kezdő feltöltés): ' : o.histText ? o.histText + '; lépés: ' : 'Felvéve, lépés: ') + stepLabel(c, step) + note });
   add('cases', c);
-  (o.links || []).forEach(l => { const other = Cs(l.id); if (other && !other.links.some(x => x.id === id)) mut('cases', other, x => { x.links.push({ id, rel: l.back || 'kapcsolódó ügy' }); }); });
+  if (o.rel) add('rels', { id: newId('l'), kind: o.rel.kind, from: o.rel.from, to: id, at: now(), by: uid });
+  const other = o.relate ? Cs(o.relate) : null;
+  if (other && ['write', 'read'].indexOf(caseAccess(other)) > -1) add('rels', { id: newId('l'), kind: 'kapcsolodik', from: id, to: other.id, at: now(), by: uid });
   audit('új ügy', pid, id, t.name);
   return id;
-});
+}
+ops.createCase = o => tx('Új ügy', () => createCaseRaw(o));
 /* Lépésváltás; a lépések között nincs kötött átmenet (K4.4) */
 ops.step = (id, stepId, extra) => tx('Lépés', () => {
   const c = Cs(id), before = cat(c), oldStep = c.step;
@@ -760,14 +808,22 @@ ops.close = (id, reason, extra) => tx('Lezárás', () => {
   }
   audit('lezárás', c.patientId, id, reason);
 });
-ops.reopen = id => tx('Újranyitás', () => { const c = Cs(id); mut('cases', c, x => { x.closed = null; hist(x, 'Újranyitva'); }); audit('újranyitás', c.patientId, id); });
+/* Felelős csak a profil aktív tagja maradhat: a profilból kikerült munkatárs az újranyitott vagy továbbvitt ügyön nem felelős,
+   így az ügy szükség esetén a „Felelős nélkül” részbe kerül (a prototípus bírálata, 4. pont) */
+const activeOwners = c => c.owners.filter(o => U(o).profile === c.profileId);
+ops.reopen = id => tx('Újranyitás', () => {
+  const c = Cs(id), gone = c.owners.filter(o => U(o).profile !== c.profileId);
+  mut('cases', c, x => { x.closed = null; x.owners = activeOwners(x); hist(x, 'Újranyitva' + (gone.length ? '; ' + gone.map(uname).join(', ') + ' már nem tagja a profilnak, ezért nem felelős' + (x.owners.length ? '' : ', az ügy felelős nélkül áll') : '')); });
+  audit('újranyitás', c.patientId, id);
+});
 ops.renew = id => tx('Hosszabbítás', () => {
   const c = Cs(id), nid = newId('k');
   const d = Object.assign({}, c.data, { reqType: 'hosszabbítás', sentOn: '', decidedOn: '', expiresOn: '', prevExpires: c.data.expiresOn || '' });
-  add('cases', Object.assign(clone(c), { id: nid, step: 'elok', data: d, prev: id, closed: null, waitSince: null, created: { at: now(), by: me() },
+  add('cases', Object.assign(clone(c), { id: nid, step: 'elok', data: d, prev: id, closed: null, waitSince: null, created: { at: now(), by: me() }, owners: activeOwners(c),
     history: [{ at: now(), by: me(), text: 'Hosszabbítás indítva az előző engedélyből; lépés: előkészítendő' }], contacts: [], files: [], labels: c.labels.slice(),
-    links: [{ id, rel: 'az előző engedély' }], ver: 1, his: [], due: null, appearanceId: null, note: '', startedAs: openAdmission(c.patientId) ? 'fekvő' : 'járó' }));
-  mut('cases', c, x => { x.links.push({ id: nid, rel: 'a hosszabbítás' }); hist(x, 'Hosszabbítás indult'); });
+    ver: 1, his: [], due: null, appearanceId: null, note: '', startedAs: openAdmission(c.patientId) ? 'fekvő' : 'járó' }));
+  add('rels', { id: newId('l'), kind: 'hosszabbitas', from: id, to: nid, at: now(), by: me() });
+  mut('cases', c, x => { hist(x, 'Hosszabbítás indult'); });
   audit('hosszabbítás', c.patientId, nid);
   return nid;
 });
@@ -775,11 +831,12 @@ ops.newRequestFrom = id => tx('Új kérelem', () => {
   const c = Cs(id), nid = newId('k');
   const d = c.type === 'vizsgalat' ? { exam: c.data.exam, region: c.data.region, anesthesia: c.data.anesthesia } : Object.assign({}, c.data, { sentOn: '', decidedOn: '', expiresOn: '' });
   add('cases', { id: nid, patientId: c.patientId, profileId: c.profileId, areaId: c.areaId, type: c.type, title: c.title, step: cfg.types[c.type].steps[0].id,
-    owners: c.owners.slice(), watchers: c.watchers.slice(), due: null, his: [], startedAs: openAdmission(c.patientId) ? 'fekvő' : 'járó', appearanceId: null, data: d, note: '',
-    links: [{ id, rel: c.type === 'vizsgalat' ? 'a lemondott előjegyzés helyett' : 'az előző kérelemre hivatkozva' }], prev: null, closed: null, waitSince: null,
+    owners: activeOwners(c), watchers: c.watchers.slice(), due: null, his: [], startedAs: openAdmission(c.patientId) ? 'fekvő' : 'járó', appearanceId: null, data: d, note: '',
+    prev: null, closed: null, waitSince: null,
     created: { at: now(), by: me() }, history: [{ at: now(), by: me(), text: 'Új kérelem az előzőre hivatkozva; lépés: ' + cfg.types[c.type].steps[0].label }],
     contacts: [], files: [], labels: (c.labels || []).slice(), meeting: null, triage: null, decision: '', participants: [], discussedAt: null, decidedAt: null });
-  mut('cases', c, x => { x.links.push({ id: nid, rel: 'az új kérelem' }); });
+  add('rels', { id: newId('l'), kind: c.type === 'vizsgalat' ? 'ujeloj' : 'ujkerelem', from: id, to: nid, at: now(), by: me() });
+  mut('cases', c, x => { hist(x, c.type === 'vizsgalat' ? 'Új előjegyzés indult' : 'Új kérelem indult'); });
   audit('új kérelem', c.patientId, nid);
   return nid;
 });
@@ -806,27 +863,19 @@ ops.decide = (id, o, baseVer) => {
       if (o.participants) x.participants = o.participants;
       hist(x, 'Döntés rögzítve' + (o.tasks && o.tasks.length ? ', ' + o.tasks.length + ' teendővel' : ', teendő nélkül'));
     });
+    /* A teendősor „Kapcsolt ügy indul belőle” mezője: ugyanaz történik, mint a teendő menüjéből, csak egyszerre (a terv 3.4) */
     (o.tasks || []).forEach(r => {
       const tid = newId('t');
-      let spawned = null;
-      if (r.spawn) {
-        const nid = newId('k'), prof = c.profileId, ty = r.spawn, area = cfg.defaultArea[prof][ty];
-        const g = careIn(c.patientId, prof);
-        const data = ty === 'engedely' ? { indication: g ? g.dx : '', reqType: 'új' }
-          : ty === 'vizsgalat' ? { exam: 'MR', region: c.data.region || '' } : {};
-        add('cases', { id: nid, patientId: c.patientId, profileId: prof, areaId: area, type: ty, title: ty === 'vizsgalat' ? r.text : '', step: cfg.types[ty].steps[0].id,
-          owners: r.owner ? [r.owner] : [], watchers: ty === 'vizsgalat' ? [c.owners[0]] : [], due: null, his: [], startedAs: openAdmission(c.patientId) ? 'fekvő' : 'járó', appearanceId: null,
-          data, note: '', links: [{ id: c.id, rel: c.type === 'd2t' ? 'a D2T-döntésből' : c.type === 'radio' ? 'a konzíliumi döntésből' : 'a megbeszélés döntéséből' }], prev: null, closed: null, waitSince: null,
-          created: { at: now(), by: me() }, history: [{ at: now(), by: me(), text: 'Felvéve a megbeszélés döntéséből; lépés: ' + cfg.types[ty].steps[0].label }],
-          contacts: [], files: [], labels: [], meeting: null, triage: null, decision: '', participants: [], discussedAt: null, decidedAt: null });
-        mut('cases', c, x => { x.links.push({ id: nid, rel: 'ebből indult: ' + cfg.types[ty].name }); });
-        spawned = nid;
-      }
-      add('tasks', { id: tid, caseId: c.id, text: r.text, owner: r.owner || null, due: r.due || null, done: null, created: { at: now(), by: me() }, spawned, note: '' });
+      add('tasks', { id: tid, caseId: c.id, text: r.text, owner: r.owner || null, due: r.due || null, done: null, created: { at: now(), by: me() }, spawned: null, note: '' });
+      if (!r.spawn || spawnTypes(c.profileId).indexOf(r.spawn) === -1) return;
+      const ty = r.spawn, g = careIn(c.patientId, c.profileId), ao = (cfg.areas[areaFor(ty, c.profileId, me())] || {}).owner || null;
+      const data = ty === 'engedely' ? { indication: g ? g.dx : '', reqType: 'új' } : ty === 'vizsgalat' ? { exam: 'MR', region: c.data.region || '' } : {};
+      spawnRaw(Tk(tid), c, { type: ty, title: titleFromTask(ty) ? r.text : '', due: r.due || null, owners: r.owner ? [r.owner] : ao ? [ao] : [], data,
+        watchers: ty === 'vizsgalat' && c.owners[0] ? [c.owners[0]] : [] });
     });
-    const hasTasks = st.tasks.some(t => t.caseId === c.id && !t.done);
+    const hasTasks = st.tasks.some(t => t.caseId === c.id && !t.done), spawnedAll = (o.tasks || []).length > 0;
     if (hasTasks) mut('cases', c, x => { x.step = flowOf(c.type) === 'd2t' ? 'eld' : 'ten'; });
-    else mut('cases', c, x => { x.closed = { reason: 'teljesült', at: now(), by: me() }; hist(x, 'Lezárva: ' + (flowOf(c.type) === 'd2t' ? 'teljesült' : 'elintézve') + ' (teendő nélkül)'); });
+    else mut('cases', c, x => { x.closed = { reason: 'teljesült', at: now(), by: me() }; hist(x, 'Lezárva: ' + (flowOf(c.type) === 'd2t' ? 'teljesült' : 'elintézve') + (spawnedAll ? ' (minden teendőből kapcsolt ügy lett)' : ' (teendő nélkül)')); });
     audit('döntés', c.patientId, id);
   });
 };
@@ -842,16 +891,48 @@ ops.addTask = (caseId, o) => tx('Új teendő', () => {
   audit('új teendő', c ? c.patientId : null, caseId, o.text);
   return id;
 });
+/* A konzíliumi és a D2T-eset akkor zárul, amikor minden teendője kész (a kapcsolt üggyé lett teendő is kész) */
+function autoClose(c) {
+  if (((flowOf(c.type) === 'konz' && c.step === 'ten') || (flowOf(c.type) === 'd2t' && c.step === 'eld')) && !c.closed && st.tasks.filter(x => x.caseId === c.id).every(x => x.done))
+    mut('cases', c, x => { x.closed = { reason: 'teljesült', at: now(), by: 'rendszer' }; hist(x, 'Minden teendő kész: az eset ' + (flowOf(c.type) === 'd2t' ? 'lezárult (teljesült)' : 'elintézve'), 'rendszer'); });
+}
 ops.closeTask = id => tx('Teendő kész', () => {
   const t = Tk(id), c = Cs(t.caseId);
   mut('tasks', t, x => { x.done = { at: now(), by: me() }; });
-  if (c) {
-    mut('cases', c, x => { hist(x, 'Teendő kész: ' + t.text); });
-    if (((flowOf(c.type) === 'konz' && c.step === 'ten') || (flowOf(c.type) === 'd2t' && c.step === 'eld')) && !c.closed && st.tasks.filter(x => x.caseId === c.id).every(x => x.done))
-      mut('cases', c, x => { x.closed = { reason: 'teljesült', at: now(), by: 'rendszer' }; hist(x, 'Minden teendő kész: az eset ' + (flowOf(c.type) === 'd2t' ? 'lezárult (teljesült)' : 'elintézve'), 'rendszer'); });
-  }
+  if (c) { mut('cases', c, x => { hist(x, 'Teendő kész: ' + t.text); }); autoClose(c); }
   audit('teendő kész', c ? c.patientId : null, t.caseId, t.text);
 });
+/* Kapcsolt ügy egy teendőből (K4.11; a terv 3.4). Átkerül a beteg, a cím, a határidő és a felelős; az área az ügytípusé; aki indítja,
+   figyelőként követi, ha nem ő viszi. Az engedély és az átadás címe a fő adatából jön (gyógyszer, fogadó intézmény), ezért ott a teendő szövege nem cím.
+   CT 1. kérdésére a javasolt válasz: a teendő ezzel kész, „kapcsolt ügy lett belőle” jelöléssel; ha CT mást dönt, itt fordítható (a teendő nyitva marad). */
+const SPAWN_CLOSES_TASK = true;
+const titleFromTask = type => type !== 'engedely' && type !== 'atadas';
+/* A teendőből indítható ügytípusok: a profil bekapcsolt ügytípusai; a döntés teendősorából megbeszélés nem, mert ahhoz alkalom is kell */
+function spawnTypes(profileId, withMeetings) { return (cfg.newMenu[profileId] || []).map(m => m[0]).filter(t => withMeetings || !isMeet(t)); }
+function spawnRaw(t, c, o) {
+  const owners = (o.owners || []).filter(Boolean);
+  const nid = createCaseRaw({ type: o.type, profile: c.profileId, patientId: c.patientId, title: o.title || '', due: o.due || null, owners, noOwner: !owners.length,
+    watchSelf: true, watchers: o.watchers || [], data: o.data || {}, meeting: o.meeting || null, rel: { kind: 'ebbol', from: c.id }, histText: 'Felvéve kapcsolt ügyként, a teendőből: „' + t.text + '”' });
+  mut('tasks', t, x => { x.spawned = nid; if (SPAWN_CLOSES_TASK) x.done = { at: now(), by: me() }; });
+  mut('cases', c, x => { hist(x, (SPAWN_CLOSES_TASK ? 'Teendő kész, kapcsolt ügy lett belőle: ' : 'Kapcsolt ügy indult a teendőből: ') + t.text); });
+  return nid;
+}
+/* A tár is ellenőrzi (K9.11): a teendő a néző profiljáé és nyitott, még nem indult belőle ügy, és az ügytípus a profilban be van kapcsolva */
+ops.spawnFromTask = (tid, o) => {
+  const t = Tk(tid), c = t ? Cs(t.caseId) : null;
+  if (!t || !c || t.done || t.spawned || taskAccess(t) !== 'write' || !o || spawnTypes(c.profileId, true).indexOf(o.type) === -1) return { denied: true };
+  return tx('Kapcsolt ügy', () => { const nid = spawnRaw(t, c, o); autoClose(c); return nid; });
+};
+/* Meglévő ügy kapcsolása (a terv 3.5): egyenrangú kapcsolat, szabad szöveg nélkül. Csak a saját ügyhöz, és csak olyan ügy, amelyet a néző részletesen láthat */
+ops.relate = (aId, bId) => {
+  const a = Cs(aId), b = Cs(bId);
+  if (!a || !b || a.id === b.id || caseAccess(a) !== 'write' || ['write', 'read'].indexOf(caseAccess(b)) === -1 || relBetween(a.id, b.id)) return { denied: true };
+  return tx('Kapcsolás', () => {
+    add('rels', { id: newId('l'), kind: 'kapcsolodik', from: a.id, to: b.id, at: now(), by: me() });
+    mut('cases', a, x => { hist(x, 'Kapcsolva: ' + caseTitle(b)); });
+    audit('kapcsolás', a.patientId, a.id, caseTitle(b));
+  });
+};
 ops.assignTask = (id, owner) => tx('Teendő felelőse', () => { const t = Tk(id); mut('tasks', t, x => { x.owner = owner; }); });
 ops.takeCase = id => tx('Elvállalás', () => { const c = Cs(id); mut('cases', c, x => { x.owners = [me()]; hist(x, 'Elvállalta'); }); });
 function addContactRaw(c, o) { mut('cases', c, x => { x.contacts.push({ at: o.at || now(), by: me(), whom: o.whom, how: o.how, note: o.note || '', after: !!o.after }); hist(x, 'Kapcsolatfelvétel: ' + o.whom + ', ' + o.how); }); }
@@ -893,12 +974,26 @@ ops.saveView = (name, spec) => tx('Saját nézet', () => { add('views', { id: ne
 ops.deleteView = id => tx('Nézet törlése', () => { const v = st.views.find(x => x.id === id); touch('views', v); st.views.splice(st.views.indexOf(v), 1); });
 ops.rename = (profileId, type, stepId, label) => { if (!isAdminOf(me(), profileId)) return { denied: true }; st.renames[profileId + ':' + type + ':' + stepId] = label; audit('lépés átnevezése', null, null, type + ': ' + label); persist(); emit('tx'); };
 /* Ügytípus-szerkesztő (K4.17): a profil adminja hoz létre ügytípust; minden lépés pontosan egy kategóriába tartozik (K4.3) */
+/* A tár ugyanazt ellenőrzi, mint a felület (a prototípus bírálata, 7. pont): név; a profil saját áreája; minden lépésnek neve és kategóriája van,
+   a várakozónál a címzett a K4.5 listájából; legalább egy lépés nem lezárt (ebben indul az új ügy) */
+function typeError(o) {
+  const cats = cfg.cats.map(c => c[0]), steps = Array.isArray(o.steps) ? o.steps : [];
+  if (!String(o.name || '').trim()) return 'Az ügytípusnak neve kell.';
+  if (!o.area || !cfg.areas[o.area] || cfg.areas[o.area].profile !== o.profile) return 'Az área a profil saját áreája legyen.';
+  if (!steps.length) return 'Adj meg legalább egy lépést, a kategóriájával.';
+  if (steps.some(s => !String(s.label || '').trim())) return 'Minden lépésnek neve kell.';
+  if (steps.some(s => cats.indexOf(s.cat) === -1)) return 'Kategória nélkül a lépés nem menthető.';
+  if (steps.some(s => s.cat === 'V' && cfg.waitFor.indexOf(s.wait) === -1)) return 'A várakozó lépésnél meg kell adni, kire várunk.';
+  if (!steps.some(s => s.cat !== 'L')) return 'Kell legalább egy lépés, amely nem lezárt: ebben indul az új ügy.';
+  return '';
+}
 ops.createType = o => {
   if (!isAdminOf(me(), o.profile)) return { denied: true };
+  const err = typeError(o); if (err) return { denied: true, err };
   return tx('Új ügytípus', () => {
     const id = newId('u');
-    add('types', { id, profile: o.profile, name: o.name, area: o.area, created: { at: now(), by: me() },
-      steps: o.steps.map((s, i) => Object.assign({ id: 's' + (i + 1), label: s.label, cat: s.cat }, s.cat === 'V' ? { wait: s.wait } : {})) });
+    add('types', { id, profile: o.profile, name: String(o.name).trim(), area: o.area, created: { at: now(), by: me() },
+      steps: o.steps.map((s, i) => Object.assign({ id: 's' + (i + 1), label: String(s.label).trim(), cat: s.cat }, s.cat === 'V' ? { wait: s.wait } : {})) });
     audit('ügytípus létrehozása', null, null, o.name + ': ' + o.steps.map(s => s.label + ' (' + catWord[s.cat] + ')').join(', '), { prof: o.profile, tid: id });
     return id;
   });
@@ -968,14 +1063,24 @@ ops.saveArea = (id, o) => {
     audit('área módosítása', null, null, a.name + ': tagok: ' + (a.members.map(uname).join(', ') || 'nincs') + '; felelős: ' + (a.owner ? uname(a.owner) : 'nincs') + '; helyettes: ' + (a.deputy ? uname(a.deputy) : 'nincs'), { prof: a.profile });
   });
 };
-/* Bekapcsolás az alapértékekkel: az ügyei a választott, ennek híján a profil első áreájára kerülnek */
+/* Hová kerülnek az ügyei bekapcsoláskor: a változat korábbi áreája, ha még megvan, különben a profil első áreája.
+   A gomb felirata és a művelet ugyanezt használja (a prototípus bírálata, 8. pont) */
+function variantOnArea(profileId, type, area) {
+  const v = vrec(profileId, type), ok = a => a && cfg.areas[a] && cfg.areas[a].profile === profileId;
+  return ok(area) ? area : v && ok(v.area) ? v.area : cfg.areaOrder[profileId][0] || null;
+}
+/* Bekapcsolás az alapértékekkel: az ügyei a választott, ennek híján a változat korábbi, ennek híján a profil első áreájára kerülnek */
 ops.setVariantOn = (profileId, type, on, area) => {
   const v = vrec(profileId, type); if (!v || !adminOk(profileId)) return { denied: true };
   return tx(on ? 'Bekapcsolás' : 'Kikapcsolás', () => {
-    mut('variants', v, x => { x.on = !!on; if (on) { const a = area || x.area; x.area = a && cfg.areas[a] && cfg.areas[a].profile === profileId ? a : cfg.areaOrder[profileId][0] || null; } });
+    mut('variants', v, x => { x.on = !!on; if (on) x.area = variantOnArea(profileId, type, area); });
     audit(on ? 'ügytípus bekapcsolása' : 'ügytípus kikapcsolása', null, null, (v.name || cfg.types[type].name) + (on ? ': ' + areaName(v.area) : ''), { prof: profileId });
   });
 };
+/* A plusz adat használatban van, ha valamelyik ügyön ki van töltve (a prototípus bírálata, 6. pont): ilyenkor törlés helyett archiválódik,
+   a régi ügyeken megmarad a neve és az értéke, új ügynél már nem jelenik meg */
+function plusUsed(profileId, type, id) { return st.cases.some(c => c.profileId === profileId && c.type === type && c.data && c.data[id] !== undefined && c.data[id] !== null && c.data[id] !== ''); }
+const plusText = list => { const on = list.filter(e => !e.archived).map(e => e.label), off = list.filter(e => e.archived).map(e => e.label); return 'plusz adatok: ' + (on.join(', ') || 'nincs') + (off.length ? '; archiválva: ' + off.join(', ') : ''); };
 /* A változat: saját név, área, lépésnevek, vizsgálatlista, plusz adatok (K4.2); a kategória, a közös és a fő adatok kötöttek */
 ops.saveVariant = (profileId, type, o) => {
   const v = vrec(profileId, type); if (!v || !adminOk(profileId)) return { denied: true };
@@ -984,7 +1089,7 @@ ops.saveVariant = (profileId, type, o) => {
     if (o.name !== undefined && o.name !== v.name) { p.name = o.name; parts.push('név: ' + o.name); }
     if (o.area && o.area !== cfg.defaultArea[profileId][type]) { p.area = o.area; parts.push('área: ' + areaName(o.area)); }
     if (o.exams && o.exams.join('|') !== (v.exams || []).join('|')) { p.exams = o.exams.slice(); parts.push('vizsgálatok: ' + o.exams.join(', ')); }
-    if (o.extra && JSON.stringify(o.extra) !== JSON.stringify(v.extra || [])) { p.extra = clone(o.extra); parts.push('plusz adatok: ' + (o.extra.map(e => e.label).join(', ') || 'nincs')); }
+    if (o.extra && JSON.stringify(o.extra) !== JSON.stringify(v.extra || [])) { p.extra = clone(o.extra); parts.push(plusText(o.extra)); }
     if (Object.keys(p).length) mut('variants', v, x => { Object.assign(x, p); });
     const rn = renameSteps(profileId, type, o.labels); if (rn.length) parts.push('lépésnevek: ' + rn.join(', '));
     if (parts.length) audit('változat módosítása', null, null, v.name + ': ' + parts.join('; '), { prof: profileId });
@@ -1042,7 +1147,8 @@ ops.saveReminders = (profileId, map) => {
    a profil adminja nem adhatja, és akinek ilyen szerepköre van, annak a szerepkörét nem módosíthatja */
 ops.setRole = (uid, profileId, role) => {
   const u = U(uid);
-  if (!adminOk(profileId) || u.profile !== profileId || u.head || toMainAdmin(u.role) || toMainAdmin(role) || cfg.profileRoles.indexOf(role) === -1) return { denied: true };
+  /* A saját szerepkörét senki nem módosítja: így a nővér sem teheti magát orvossá, más profil betegadatához (a prototípus bírálata, 1. pont) */
+  if (!adminOk(profileId) || uid === me() || u.profile !== profileId || u.head || toMainAdmin(u.role) || toMainAdmin(role) || cfg.profileRoles.indexOf(role) === -1) return { denied: true };
   const old = u.role;
   return tx('Szerepkör', () => { upsertMember(uid, { role, removed: null }); audit('szerepkör módosítása', null, null, uname(uid) + ': ' + old + ' → ' + role, { prof: profileId, uid }); });
 };
@@ -1083,7 +1189,9 @@ ops.dismiss = id => { const r = st.reminders.find(x => x.id === id); if (r && r.
 ops.openCard = pid => { audit('kártya', pid); persist(); };
 ops.openCase = cid => { const c = Cs(cid); audit('ügy', c ? c.patientId : null, cid); persist(); };
 ops.auditQuery = pid => { audit('naplólekérdezés', pid); persist(); };
-ops.draft = (key, text) => { const u = me(); if (!u) return; st.drafts[u] = st.drafts[u] || {}; if (text) st.drafts[u][key] = text; else delete st.drafts[u][key]; persist(); };
+/* A piszkozat csak valódi változáskor ír: különben a lapok minden rajzoláskor visszaírnák a teljes állapotot, és két lap egymás régi állapotát
+   pingpongozhatná végtelenül (az F3 két- és háromlapos próbájában előjött) */
+ops.draft = (key, text) => { const u = me(); if (!u) return; const d = st.drafts[u] || {}; if ((d[key] || '') === (text || '')) return; st.drafts[u] = d; if (text) d[key] = text; else delete d[key]; persist(); };
 ops.saveNote = (id, text) => tx('Megjegyzés', () => { const c = Cs(id); mut('cases', c, x => { x.note = text; hist(x, 'Megjegyzés mentve'); }); ops.draft('note:' + id, ''); });
 const draftOf = key => { const u = me(); return u && st.drafts[u] ? st.drafts[u][key] || '' : ''; };
 
@@ -1168,6 +1276,7 @@ BT.tar = {
   leaderScope, summary, closedByReason, metrics, periodNames, searchPatients, search, usedLabels, searchDuty, dutyVisible, mergeConflicts, mergeBlocked, meetingsAhead,
   checkTaj, wardProfiles, nextMeeting, meetingDeadline, missingFields, remindersFor, ops, undo, draftOf, norm,
   isMainAdmin, isActive, adminSource, isAdminOf, adminProfiles, canGrant, headOf, toMainAdmin, requestsFor, account, pendingFor, checkMail, seesSummary,
-  flowOf, isMeet, variant, remindOf, seriesName, membersOf, memberLoad, stepBase
+  flowOf, isMeet, variant, remindOf, seriesName, membersOf, memberLoad, stepBase, variantOnArea, plusUsed,
+  relWord, relBetween, originOf, linkedOf, openTasksOf, areaFor, spawnTypes, titleFromTask, spawnClosesTask: SPAWN_CLOSES_TASK
 };
 })();

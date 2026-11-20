@@ -694,3 +694,114 @@ legend + .chip-sub{margin-top:.125rem}
 .brand-mark{display:block; width:auto; height:1.75rem}
 .clinic-logo{display:block; width:auto; height:2.5rem; margin-left:auto}
 @media (max-width: 40rem){ .clinic-logo{height:2.125rem; order:2} .top-sub{order:3; flex-basis:100%} }
+
+/* ---------- Személyválasztó: kereshető, legördülő lista (K4.8; CT kérése, 2026-11-19) ----------
+   A mező a meglévő szövegmező; a lista a menük nyelvén (fehér lap, vékony keret, puha árnyék); a választottak a címkék nyelvén. */
+.cb{position:relative}
+.cb-box{position:relative}
+.cb-input{padding-right:2.75rem; text-overflow:ellipsis}
+.cb-input::placeholder{color:var(--ink-2); opacity:1}
+.cb-btn{position:absolute; right:.3125rem; top:50%; transform:translateY(-50%); display:inline-flex; align-items:center; justify-content:center; width:2.25rem; height:2.25rem; padding:0; border:0; border-radius:10px; background:none; color:var(--ink-2); cursor:pointer}
+.cb-btn:hover{color:var(--accent); background:var(--accent-soft)}
+.cb-btn .ico{transition:transform .15s ease}
+.cb-btn[aria-expanded="true"] .ico{transform:rotate(180deg)}
+.cb-list{position:absolute; left:0; right:0; top:calc(100% + .375rem); z-index:16; min-width:min(17rem, calc(100vw - 3rem)); max-height:17.5rem; overflow-y:auto; margin:0; padding:.375rem; list-style:none; background:var(--white); border:1px solid var(--line); border-radius:14px; box-shadow:0 12px 32px rgba(29,31,33,.12); text-align:left}
+.cb-opt{display:flex; align-items:center; gap:.75rem; padding:.5rem .75rem; border-radius:10px; cursor:pointer; color:var(--ink)}
+.cb-opt:hover{background:var(--paper)}
+.cb-opt.is-act{background:var(--accent-soft)}
+.cb-text{display:block; min-width:0; flex:1 1 auto}
+.cb-name{display:block; font-size:1rem}
+.cb-sub{display:block; font-size:.875rem; color:var(--ink-2)}
+.cb-opt[aria-selected="true"] .cb-name{font-weight:600}
+.cb-opt.is-none .cb-name{color:var(--ink-2)}
+.cb-check{flex:none; display:inline-flex; width:1.125rem; color:var(--accent)}
+.cb-none{margin:.5rem 0 0; font-size:.875rem; color:var(--ink-2)}
+.cb-tags{margin:.125rem 0 .625rem}
+.cb-tags .label{gap:.125rem; padding-right:.25rem}
+.cb-x{display:inline-flex; align-items:center; justify-content:center; width:1.75rem; height:1.75rem; margin:0; padding:0; border-radius:999px; color:var(--ink-2); text-decoration:none}
+.cb-x:hover{color:var(--accent); background:var(--accent-soft)}
+.cb-x .ico{width:.9375rem; height:.9375rem}
+.inline-form .cb{flex:1 1 15rem; min-width:min(15rem, 100%)}
+.task-rows .cb .field-label{font-size:.875rem; font-weight:600}
+@media (forced-colors: active){
+  .cb-opt.is-act{outline:2px solid Highlight; outline-offset:-2px}
+  .cb-list{border-color:CanvasText}
+}
+
+/* ---------- A megbeszélés alkalma (K5.10): a legközelebbi négy egy kattintással, a későbbiek egy listából, esetszámmal ---------- */
+.meet-pick .chips{margin-top:.25rem}
+.meet-later{max-width:24rem; margin-top:1rem}
+.meet-dl{margin-top:.75rem}
+
+/* ---------- A napirend fejléce: az alkalom adatai, jobbra az „Új eset erre az alkalomra” (K5.11) ---------- */
+.agenda-top{display:flex; flex-wrap:wrap; align-items:flex-end; justify-content:space-between; gap:1rem 2rem}
+.agenda-top .head-actions{margin-top:.25rem}
+
+/* ---------- Az „Új ügy” menü: a megbeszélések az „Esetmegbeszélés” csoportban ---------- */
+.menu-list .mgroup ul{list-style:none; margin:0; padding:0}
+.menu-list p.mhead{margin:0}
+
+/* ---------- A betegkártya hasábjai (CT, 2026-11-19) ----------
+   A gondozás sávja a bal hasáb tetején, az ügyek fölött; az ügyeleti tételek a jobb hasábban saját, halvány lapon (fehér lap, vékony keret),
+   a sávval egy magasságban. Így a sáv nem lóg az ügyeleti tételek fölé, és a két hasáb között tér és vonal választ el. */
+.card-layout{margin-top:2rem; column-gap:3.5rem}
+.card-layout .primary > .strip{margin-top:0}
+.card-layout .strip + .group{margin-top:2.75rem}
+.duty-box{padding:1.375rem 1.5rem 1.5rem; background:var(--white); border:1px solid var(--line); border-radius:16px}
+.duty-box .duty-item.is-new{margin:0 -.75rem; padding:.875rem .75rem}
+.side .duty-box + .history{margin-top:1.75rem; padding-top:0; border-top:0}
+@media (max-width: 40rem){ .duty-box{padding:1.125rem 1rem 1.25rem} }
+@media (forced-colors: active){ .duty-box{border-color:CanvasText} }
+
+/* ---------- A Beállítások főoldala: ügytípusok és lépések (státuszok) (CT, 2026-11-19) ----------
+   A lépések egy sorban, a sorrendjükben; a nyíl csak látvány, a képernyőolvasó listaként olvassa */
+.tf-list > li{padding:1.125rem 0}
+.step-line{display:flex; flex-wrap:wrap; gap:.25rem .5rem; list-style:none; margin:.5rem 0 0; padding:0; font-size:.9375rem; color:var(--ink)}
+.step-line li{display:inline-flex; align-items:baseline; gap:.5rem}
+.step-line li + li::before{content:"→" / ""; color:var(--ink-2)}
+
+/* ---------- Kapcsolt ügyek (K4.11; CT, 2026-11-19) ----------
+   A gyerek sorában (kapcsolt ügy és teendő) a cím fölött, kis szürke betűvel a kiinduló ügy neve, kattinthatóan; a kiinduló ügy sorában
+   a lenyitó a darabszámmal, lenyitva vékony bal vonallal, doboz nélkül. A jelölés egy sorban marad, amíg elfér. */
+.kin{display:flex; align-items:baseline; gap:.375rem; margin:0 0 .125rem; font-size:.875rem; line-height:1.4; color:var(--ink-2)}
+.kin .ico{width:.9375rem; height:.9375rem; align-self:center}
+.kin a{color:var(--ink-2); text-decoration:underline; text-decoration-color:var(--line-strong); text-underline-offset:3px}
+.kin a:hover{color:var(--ink); text-decoration-color:currentColor}
+.case .kin{margin:.5rem 0 0}
+.case .kin + .case-title{margin-top:.125rem}
+.kids-btn{display:flex; align-items:center; gap:.375rem; min-height:1.75rem; margin:.375rem 0 0; padding:.125rem 0; background:none; border:0; color:var(--accent); font-size:.875rem; font-weight:600; text-align:left; white-space:nowrap; cursor:pointer}
+.kids-btn .ico{width:1rem; height:1rem}
+.kids-btn > .ico:last-child{transition:transform .15s ease}
+.kids-btn[aria-expanded="true"] > .ico:last-child{transform:rotate(180deg)}
+.kids-btn:hover .kids-n{text-decoration:underline; text-underline-offset:3px}
+.case .kids-btn{margin-top:1.25rem}
+.sub-row{display:flex; flex-wrap:wrap; align-items:baseline; gap:0 .875rem; margin-top:.25rem}
+.cell-what .sub-row > .sub{margin-top:0; flex:0 1 auto; min-width:0}
+.sub-row > .kids-btn{margin:0}
+.kids{margin:.375rem 0 .25rem; padding:.125rem 0 .125rem .875rem; border-left:2px solid var(--line)}
+.kids-h{margin:.625rem 0 .125rem; font-size:.8125rem; font-weight:600; color:var(--ink-2)}
+.kids-h:first-child{margin-top:.125rem}
+.kids-list{list-style:none; margin:0; padding:0}
+.kids-list li{padding:.25rem 0; font-size:.9375rem}
+.kids-list a{color:var(--accent); font-weight:500; text-decoration:none}
+.kids-list a:hover{text-decoration:underline; text-underline-offset:3px}
+.kids-list .is-closed a,.kids-list .kid-title{color:var(--ink-2)}
+.kid-sub{display:block; font-size:.875rem; color:var(--ink-2)}
+.kid-sub .ico,.li-sub .late .ico{margin-right:.25rem}
+/* Az ügy oldalán: „Innen indult” a cím és az állapot alatt; a „Kapcsolt ügyek” a teendők után, a lezártak halványabban */
+.case-origin{display:flex; align-items:baseline; gap:.5rem; margin:.75rem 0 0; color:var(--ink-2); font-size:.9375rem}
+.case-origin .ico{width:1rem; height:1rem; align-self:center}
+.linked .is-closed .li-main a{color:var(--ink-2)}
+.linked .is-hdr .li-main{color:var(--ink-2)}
+/* A teendő menüje és az indító űrlap a teendő sora alatt; a lenyitott listából érkezve a teendő halványkék alapon */
+.row > .link-form{grid-column:1 / -1}
+.link-form{margin-top:1rem; padding:1.5rem 0 .5rem; border-top:1px solid var(--line)}
+.plain-list .link-form{margin-top:1rem}
+.lk-from{margin:-.5rem 0 0; color:var(--ink-2); font-size:.9375rem}
+.lk-prev{margin-top:1rem; padding:.75rem 0; border-top:1px solid var(--line); border-bottom:1px solid var(--line); font-size:.9375rem}
+.lk-prev p{margin:0}
+.lk-prev p + p{margin-top:.125rem}
+.plain-list > li.is-target{margin:0 -1rem; padding:1rem; border-radius:12px; background:var(--accent-soft); border-bottom-color:transparent}
+.undo a{color:var(--accent); font-weight:600; text-decoration:underline; text-underline-offset:3px}
+@media (max-width: 30rem){ .kids-btn{white-space:normal} }
+@media (forced-colors: active){ .kids{border-left-color:CanvasText} .plain-list > li.is-target{outline:2px solid Highlight} }
