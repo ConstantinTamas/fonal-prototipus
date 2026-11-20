@@ -767,6 +767,8 @@ legend + .chip-sub{margin-top:.125rem}
 .kin .ico{width:.9375rem; height:.9375rem; align-self:center}
 .kin a{color:var(--ink-2); text-decoration:underline; text-decoration-color:var(--line-strong); text-underline-offset:3px}
 .kin a:hover{color:var(--ink); text-decoration-color:currentColor}
+/* A cím fölötti link és a cím között legalább 7 px (célterület, WCAG 2.5.8; a táblázatos nézet javaslatának 7. része) */
+.cell-what > .kin{margin-bottom:.4375rem}
 .case .kin{margin:.5rem 0 0}
 .case .kin + .case-title{margin-top:.125rem}
 .kids-btn{display:flex; align-items:center; gap:.375rem; min-height:1.75rem; margin:.375rem 0 0; padding:.125rem 0; background:none; border:0; color:var(--accent); font-size:.875rem; font-weight:600; text-align:left; white-space:nowrap; cursor:pointer}
@@ -805,3 +807,235 @@ legend + .chip-sub{margin-top:.125rem}
 .undo a{color:var(--accent); font-weight:600; text-decoration:underline; text-underline-offset:3px}
 @media (max-width: 30rem){ .kids-btn{white-space:normal} }
 @media (forced-colors: active){ .kids{border-left-color:CanvasText} .plain-list > li.is-target{outline:2px solid Highlight} }
+
+/* ---------- Az öt státuszkategória, az igen/nem címke és a táblázatos nézet (CT, 2026-11-20) ----------
+   A D nyugalma marad: az alapszínek ugyanannak a halvány, papírszerű skálának a tagjai (a papírhoz mérve 1,1–1,24), a jelentést a betű és
+   a jel hordozza (a betű az alapon 8:1 fölött, a jel a papíron és a címkén is 4,9:1 fölött). A szín soha nem jelez egyedül: mellette mindig
+   a lépés neve és a kategória saját alakú jele. A piros csak a késésé, a lila csak az igen/nem adat igenje. Nagybetű nincs. */
+:root{
+  --ny-bg:#ECEEF1; --ny-ink:#1D1F21; --ny-mark:#5F6773;
+  --f-bg:#D9E6F8;  --f-ink:#143F7A;  --f-mark:#1E5AA8;
+  --v-bg:#F7E3BC;  --v-ink:#5C3900;  --v-mark:#8A5300;
+  --k-bg:#D2EAD9;  --k-ink:#164A27;  --k-mark:#23683A;
+  --l-bg:#E3E1DD;  --l-ink:#3B3E43;  --l-mark:#55595F;
+  --yes-bg:#E9DDF5; --yes-ink:#4A226F; --yes-mark:#6A3A99;
+  --mono-bg:#ECEAE6; --mono-ink:#3B3E43;
+}
+/* A címke csak akkor törik, ha egy sorban nem fér el (a hosszú, átnevezett lépésnév is), minden szélességen és a csoportfejlécben is */
+.pill{display:inline-flex; align-items:center; gap:.3125rem; max-width:100%; padding:0 .625rem; border:1px solid transparent; border-radius:999px; font-size:.8125rem; line-height:1.5rem; font-weight:600; white-space:normal; overflow-wrap:anywhere; vertical-align:.05em}
+.pill .ico{width:.9375rem; height:.9375rem; flex:none}
+.pill-ny{background:var(--ny-bg); color:var(--ny-ink)} .pill-ny .ico{color:var(--ny-mark)}
+.pill-f{background:var(--f-bg); color:var(--f-ink)} .pill-f .ico{color:var(--f-mark)}
+.pill-v{background:var(--v-bg); color:var(--v-ink)} .pill-v .ico{color:var(--v-mark)}
+.pill-k{background:var(--k-bg); color:var(--k-ink)} .pill-k .ico{color:var(--k-mark)}
+.pill-l{background:var(--l-bg); color:var(--l-ink)} .pill-l .ico{color:var(--l-mark)}
+.pill-t{padding-left:0; background:none; color:var(--ink)} .pill-t .ico{color:var(--ink-2)}
+/* A címke a szöveges sorokban kisebb, hogy a sor magassága ne nőjön */
+.sub .pill,.li-sub .pill,.side-meta .pill,.notice .meta .pill,.case-origin .pill{line-height:1.375rem}
+.kid-sub .pill,.wt .w-sub .pill{font-size:.75rem; line-height:1.25rem; padding:0 .5rem}
+.kid-sub .pill .ico,.wt .w-sub .pill .ico{width:.875rem; height:.875rem}
+/* A táblázat sorának elején a kategória jele, a középtónussal */
+.mk{width:1rem; height:1rem}
+.mk-ny{color:var(--ny-mark)} .mk-f{color:var(--f-mark)} .mk-v{color:var(--v-mark)} .mk-k{color:var(--k-mark)} .mk-l{color:var(--l-mark)}
+/* Igen/nem: az igen kitöltött lila, pipával; a nem halvány szó; a hiányzó adat dőlt betűvel, szóval */
+.yn{display:inline-flex; align-items:center; gap:.25rem; max-width:100%; padding:0 .5625rem; border:1px solid transparent; border-radius:999px; font-size:.8125rem; line-height:1.5rem; font-weight:600; white-space:normal; overflow-wrap:anywhere}
+.yn .ico{width:.875rem; height:.875rem}
+.yn-yes{background:var(--yes-bg); color:var(--yes-ink)} .yn-yes .ico{color:var(--yes-mark)}
+.yn-no,.yn-none{padding:0; border:0; background:none; color:var(--ink-2); font-weight:400}
+.yn-none{font-style:italic}
+.marks{display:inline-flex; flex-wrap:wrap; gap:.25rem .75rem; vertical-align:.05em}
+/* A cím és mögötte az igen/nem címke: egy sorban, amíg elfér; ha a címke új sorba kerül, nincs behúzva */
+.tl{display:flex; flex-wrap:wrap; align-items:baseline; gap:.125rem .75rem}
+/* A felelős a táblázatban: monogram fénykép helyett; a szaggatott kör: felelős nélkül */
+.mono{display:inline-flex; align-items:center; justify-content:center; flex:none; width:1.625rem; height:1.625rem; border-radius:50%; background:var(--mono-bg); color:var(--mono-ink); font-size:.6875rem; font-weight:700; letter-spacing:.02em}
+.mono-none{background:none; border:1.5px dashed var(--line-strong)}
+.who-cell{display:inline-flex; align-items:center; gap:.5rem; min-width:0}
+.ink{color:var(--ink)}
+/* A betegkártya ügyblokkjában és az ügy oldalán a lépés címkéje; a lépéssáv (a pöttysor) marad */
+.case-kind{display:flex; flex-wrap:wrap; align-items:center; gap:.25rem .625rem}
+.case-state .pill{font-size:.875rem; line-height:1.75rem; padding:0 .75rem}
+/* Az ügy adatai között az igen címke, a nem és a „nincs megadva” a többi értékkel egy méretben */
+.kv dd .yn{font-size:.875rem}
+.kv dd .yn-no,.kv dd .yn-none{font-size:inherit; line-height:inherit}
+/* A döntés ablaka: a mező a megbeszélés adatai alatt, térrel */
+form[data-form="decide"]{margin-top:1.75rem}
+
+/* Nézetváltó (Táblázat / Sorok): két felirat, a mostani kitöltve */
+.view-seg{margin:0}
+.head-actions .view-seg{align-self:center}
+
+/* ---------- A táblázat ---------- */
+.wt{width:100%; margin-top:.75rem; border-collapse:collapse; table-layout:fixed; font-size:.9375rem; line-height:1.35}
+.wt th,.wt td{padding:.5rem; text-align:left; vertical-align:middle}
+.wt thead th{padding-top:.625rem; border-bottom:1px solid var(--line); color:var(--ink-2); font-size:.8125rem; font-weight:600; vertical-align:bottom}
+.wt th.c-mark{width:2rem} .wt th.c-pt{width:10rem} .wt th.c-taj{width:7rem} .wt th.c-yn{width:6.25rem} .wt th.c-due{width:9.75rem} .wt th.c-who{width:10rem} .wt th.c-act{width:14.5rem}
+.wt .c-mark{padding-left:.25rem; padding-right:0; text-align:center}
+.wt td.c-mark .mk{display:block; margin:0 auto}
+.wt .c-act{text-align:right; padding-right:0}
+.wt tr.r > td{border-bottom:1px solid var(--line)}
+.wt tr.r:has(+ tr.r-form) > td{border-bottom-color:transparent}
+.wt tr.r:hover > td,.wt tr.r:focus-within > td{background:#F4F2EE}
+.wt tr.r-form > td{padding:0 0 1.25rem; border-bottom:1px solid var(--line)}
+.wt tr.r-form .inline-form,.wt tr.r-form .link-form{margin-top:0}
+.wt .pt-taj{display:none}
+.wt .c-taj .t-sub{display:block; color:var(--ink-2); font-size:.8125rem}
+.wt .what-title{font-weight:500}
+.wt .kin{margin:0 0 .4375rem; font-size:.8125rem}
+.wt .w-line{display:flex; flex-wrap:wrap; align-items:baseline; gap:.125rem .75rem; margin-top:.1875rem}
+.wt .w-line.only-btn{display:inline-flex; margin:.25rem 0 0 .625rem; vertical-align:baseline}
+.wt .w-sub{min-width:0; color:var(--ink-2); font-size:.8125rem}
+.wt .w-line .kids-btn{margin:0; font-size:.8125rem}
+.wt .kids{margin-top:.5rem}
+.wt .kids-list li{font-size:.875rem}
+.wt .deputy{font-size:.8125rem}
+.wt .c-due .main{display:block; font-weight:600; font-variant-numeric:tabular-nums}
+.wt .c-due .main .ico{width:1rem; height:1rem; margin-right:.25rem}
+.wt .c-due .sub{display:block; color:var(--ink-2); font-size:.8125rem; font-variant-numeric:tabular-nums}
+.wt tr.is-late .c-due .main{color:var(--late)}
+.wt tr.is-done .what-title{text-decoration:line-through; color:var(--ink-2)}
+.wt .c-act .btn-sm{min-height:2rem; padding:0 .75rem; font-size:.875rem; white-space:normal; text-align:left}
+.wt .c-act .btn-sm.btn-icon{width:2rem; padding:0}
+.wt .c-act .undo{font-size:.875rem}
+.wt .lbl-v{display:none}
+/* A csoport fejléce: összecsukó gomb, a lépés (a vegyes listán a kategória) címkéje, darabszám, és ha van, hány késik; csukva is látszik */
+.wt tr.gh > td{padding:1.375rem 0 .375rem; border-bottom:1px solid var(--line)}
+.wt thead + tbody tr.gh > td{padding-top:.75rem}
+.gh-in{display:flex; flex-wrap:wrap; align-items:center; gap:.25rem 1rem}
+.gh-h{min-width:0; max-width:100%; margin:0; font-size:1rem; font-weight:600}
+.gh-btn{display:inline-flex; align-items:center; gap:.5rem; max-width:calc(100% + .25rem); min-height:2.25rem; padding:.125rem .625rem .125rem .25rem; margin-left:-.25rem; border:0; border-radius:10px; background:none; color:var(--ink); font:inherit; font-weight:600; text-align:left; cursor:pointer}
+.gh-btn:hover{background:#F0EEEA}
+.gh-btn > .ico:first-child{width:1rem; height:1rem; color:var(--ink-2); transition:transform .15s ease}
+.gh-btn[aria-expanded="false"] > .ico:first-child{transform:rotate(-90deg)}
+.gh-btn .pill{min-width:0; font-size:.875rem; line-height:1.75rem; padding:0 .75rem}
+.gh-btn .count,.gh-late{flex:none}
+.gh-btn .pill-t{padding-left:0; font-size:.9375rem}
+.gh-btn .count{font-weight:400}
+.gh-pre{color:var(--ink)}
+.gh-late{display:inline-flex; align-items:center; gap:.25rem; color:var(--late); font-size:.875rem; font-weight:600}
+.gh-late .ico{width:.9375rem; height:.9375rem}
+.gh-note{color:var(--ink-2); font-size:.875rem}
+.wt tbody.is-collapsed tr.r,.wt tbody.is-collapsed tr.r-form{display:none}
+/* A visszavonható 10 másodpercben a sor akkor is látszik, ha a csoportját közben összecsukták: a Visszavonás nem tűnhet el */
+.wt tbody.is-collapsed tr.r.has-undo{display:table-row}
+/* Az igen/nem oszlop az ügytípus első igen/nem adatáé; a többi a cím mögött áll. 71rem alatt az oszlop is a cím mögé kerül (yn-alt), hogy
+   az ügy oszlopa olvasható maradjon (legalább 15rem); 68rem alatt, a kártyán, újra külön, a dátum és a felelős mellett */
+.wt .yn-alt{display:none}
+.wt td.c-yn .yn{max-width:100%}
+
+/* Közepes szélesség (80rem alatt): a TAJ a név alá kerül, a többi oszlop keskenyebb. Az elrejtett oszlop nulla szélességű és láthatatlan, de megmarad:
+   így a csoportfejléc colspan-je és az oszlopok száma egyezik (különben a rögzített elrendezés láthatatlan oszlopokat ad, és a cím oszlopa összeszűkül) */
+@media (max-width: 80rem){
+  .wt th.c-taj,.wt td.c-taj{width:0; padding:0; font-size:0; line-height:0; visibility:hidden}
+  .wt td.c-taj > *{display:none}
+  .wt .pt-taj{display:block; margin-top:.0625rem; color:var(--ink-2); font-size:.8125rem}
+  .wt th.c-pt{width:9.75rem} .wt th.c-who{width:9rem} .wt th.c-yn{width:5.75rem}
+}
+@media (max-width: 71rem){
+  .wt th.c-yn,.wt td.c-yn{width:0; padding:0; font-size:0; line-height:0; visibility:hidden}
+  .wt td.c-yn .yn,.wt td.c-yn .lbl-v{display:none}
+  .wt .yn-alt{display:inline-flex}
+}
+/* Keskeny képernyő (68rem alatt, a 200%-os nagyítás és a 320 px is): a sor kártyává rendeződik; a csoportfejléc és az összecsukás megmarad.
+   Sorrend: beteg és TAJ, az ügy, egy sorban a dátum, az igen/nem és a felelős, alul a gomb. A lépésmenü a kártyán belül nyílik. */
+@media (max-width: 68rem){
+  .wt,.wt tbody,.wt tr,.wt td{display:block; width:100%}
+  .wt thead{display:none}
+  .wt tr.r{display:flex; flex-wrap:wrap; align-items:baseline; gap:.375rem 1rem; position:relative; padding:.875rem 0 .875rem 1.75rem; border-bottom:1px solid var(--line)}
+  .wt tr.r:has(+ tr.r-form){border-bottom-color:transparent}
+  .wt tr.r > td{padding:0; border:0; width:auto; min-width:0}
+  .wt tr.r:hover > td,.wt tr.r:focus-within > td{background:none}
+  .wt td.c-mark{position:absolute; left:0; top:1.0625rem; padding:0}
+  .wt td.c-mark .mk{margin:0}
+  .wt .c-pt,.wt .c-what,.wt .c-act{flex:1 1 100%}
+  .wt .c-due,.wt .c-yn,.wt .c-who{flex:0 1 auto}
+  .wt .c-due{order:1} .wt .c-yn{order:2} .wt .c-who{order:3} .wt .c-act{order:4}
+  .wt .pt-taj{display:inline; margin:0 0 0 .5rem}
+  .wt .c-due .main,.wt .c-due .sub{display:inline}
+  .wt .c-due .sub{margin-left:.375rem}
+  .wt td.c-taj{display:none}
+  .wt td.c-yn{display:block; width:auto; font-size:inherit; line-height:inherit; visibility:visible}
+  .wt td.c-yn .yn{display:inline-flex}
+  .wt td.c-yn .lbl-v{display:inline}
+  .wt .c-yn:empty,.wt .yn-alt{display:none}
+  .wt tbody.is-collapsed tr.r.has-undo{display:flex}
+  .wt .lbl-v{display:inline; margin-right:.25rem; color:var(--ink-2); font-size:.8125rem}
+  .wt .c-who{display:flex; align-items:center; gap:.375rem}
+  .wt .c-act{text-align:left; margin-top:.25rem}
+  .wt .c-act .act-pair,.wt .c-act .undo{display:flex; width:100%; flex-wrap:wrap; justify-content:flex-start; align-items:flex-start}
+  .wt .c-act .menu{position:static; min-width:0; max-width:100%}
+  .wt .c-act .menu-list{position:static; margin-top:.5rem; min-width:0; width:22rem; max-width:100%; box-shadow:0 6px 18px rgba(29,31,33,.10)}
+  .wt tr.gh > td{padding:1.5rem 0 .375rem}
+  .wt tr.r-form > td{padding:0 0 1.25rem}
+}
+
+/* A munkalista lapja sűrűbb (a bírálat sűrűségi pontja, 1366×768-on öt teljes sor): a felső térköz 24 px, az áreák előtt 16 px, a lista előtt 24 px.
+   A nézetfülek sorában jobbra a „Szűrés és rendezés”; a szűrők, a rendezés és a nézetmentés a gomb alatt nyíló panelben */
+.page.page-wl{padding-top:1.5rem}
+.wl-tools{display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:.75rem 1.5rem}
+.wl-tools .seg{margin:0}
+.wl-tools-end{display:flex; flex-wrap:wrap; align-items:center; justify-content:flex-end; gap:.5rem 1rem; margin-left:auto}
+.filter-sum{margin:0; color:var(--ink-2); font-size:.875rem}
+.filter-btn .ico{width:1rem; height:1rem}
+.filter-btn .n-badge{display:inline-block; min-width:1.25rem; padding:0 .375rem; border-radius:999px; background:var(--accent); color:#fff; font-size:.75rem; font-weight:600; line-height:1.25rem; text-align:center}
+.filters-panel{margin-top:.75rem; padding:.25rem 0 1rem; border-bottom:1px solid var(--line)}
+.filters-panel .filters{margin-top:.5rem}
+.wl-main .wl-tools + .group,.wl-main .filters-panel + .group,.wl-main .wl-tools + .note-line,.wl-main .filters-panel + .note-line,.wl-main .note-line + .group{margin-top:1.5rem}
+/* Táblázatban a munkalista áreái a táblázat fölé, egy sorba kerülnek, hogy a táblázat a teljes szélességet kapja; a soros nézetben maradnak oldalt */
+.wl.is-table{grid-template-columns:minmax(0,1fr); gap:1.25rem; margin-top:1rem}
+.wl.is-table .wl-nav{display:flex; flex-wrap:wrap; align-items:baseline; gap:.25rem 2rem; padding:.5rem 0; border-top:1px solid var(--line); border-bottom:1px solid var(--line)}
+.wl.is-table .wl-nav > div{display:flex; align-items:baseline; gap:.25rem .75rem; min-width:0; flex:0 1 auto}
+.wl.is-table .wl-nav > div:first-child{flex:1 1 30rem}
+/* A felirat (Áreák, Saját nézeteim) itt csak a képernyőolvasónak szól: a sor maga a navigáció, saját névvel */
+.wl.is-table .wl-nav > div:first-child h2{position:absolute; width:1px; height:1px; margin:-1px; padding:0; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0}
+.wl.is-table .wl-nav h2{flex:none; margin:0}
+.wl.is-table .wl-nav ul{display:flex; flex-wrap:wrap; gap:.25rem; min-width:0; margin:0}
+.wl.is-table .wl-nav a{margin:0; padding:.3125rem .5rem; gap:.375rem; justify-content:flex-start}
+.wl.is-table .wl-nav .hint{margin:0}
+.wl-main > .wl-tools:first-child{margin-top:0}
+/* A Teendőim és a Saját ügyeim táblázatban: a figyelt és a kiutalt tételek a lista alá kerülnek */
+.layout.is-table{grid-template-columns:minmax(0,1fr)}
+.layout.is-table .side{display:grid; grid-template-columns:repeat(auto-fit, minmax(min(20rem, 100%), 1fr)); gap:3rem 4rem}
+.layout.is-table .side .group + .group{margin-top:0}
+
+/* Az ügyeleti lista táblázatban: a tétel szövege a soros lista betűjével; 80rem alatt a hely a beteg alá kerül; 68rem alatt kártya, elöl a „Mikorra” */
+.duty-wt td{vertical-align:top}
+.duty-wt th.c-due{width:9.5rem} .duty-wt th.c-pt{width:11rem} .duty-wt th.c-where{width:13rem} .duty-wt th.c-from{width:10rem} .duty-wt th.c-act{width:13rem}
+.duty-wt .pt-taj{display:block; margin:.0625rem 0 0; color:var(--ink-2); font-size:.8125rem}
+.duty-wt .pt-where{display:none; margin-top:.25rem; color:var(--ink-2); font-size:.8125rem}
+.duty-wt .duty-text{display:block; font:400 1.0625rem/1.4 var(--serif)}
+.duty-wt .w-sub{display:block; margin-top:.25rem; color:var(--ink-2); font-size:.8125rem}
+.duty-wt .w-sub strong{color:var(--ink); font-weight:600}
+.duty-wt .c-from .sub{display:block; color:var(--ink-2); font-size:.8125rem}
+.duty-wt .ditem-note{margin-top:.5rem}
+.duty-wt .c-act .act-pair{flex-direction:column; align-items:flex-end}
+@media (max-width: 80rem){
+  .duty-wt th.c-where,.duty-wt td.c-where{display:none}
+  .duty-wt .pt-where{display:block}
+}
+/* A kártyán (68rem alatt): elöl a „Mikorra”, a hely és a feladó felirattal egy sorban, a gombok alul, mint a többi kártyán */
+@media (max-width: 68rem){
+  .duty-wt tr.r{padding-left:0}
+  .duty-wt .c-due{order:-1; flex:1 1 100%}
+  .duty-wt td.c-where,.duty-wt td.c-from{display:block; flex:0 1 auto; order:2}
+  .duty-wt .pt-where{display:none}
+  .duty-wt .c-from .sub{display:inline; margin-left:.375rem}
+  .duty-wt .c-act .act-pair{flex-direction:row; align-items:flex-start}
+}
+/* A napirend táblázata: a gombok (előszűrés, megbeszélés, döntés) a sorban, egymás alatt, ha nem férnek el */
+.agenda-wt th.c-act{width:15rem}
+.wt .w-miss{display:block; margin-top:.25rem; font-size:.8125rem; font-weight:600}
+.wt .w-miss .ico{width:.9375rem; height:.9375rem; margin-right:.25rem}
+/* A szerepkör-előzmények: megnyitható lista a tagok, illetve a profilok alatt */
+.role-hist{margin-top:1.5rem; padding-top:1rem; border-top:1px solid var(--line)}
+.role-hist .history-list{margin-top:.75rem}
+
+/* A fő admin: osztályvezetők és főnővérek profilonként (CT, 2026-11-20) */
+.role-profiles > li{padding:1.5rem 0}
+.role-profiles .members{margin-top:.5rem}
+.area-name .h-sub{font-weight:400; color:var(--ink-2)}
+
+@media (forced-colors: active){
+  .pill,.yn-yes,.mono{border:1px solid CanvasText}
+  .mono-none{border-style:dashed}
+  .gh-btn{border:1px solid transparent}
+}

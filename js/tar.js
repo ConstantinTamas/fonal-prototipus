@@ -405,9 +405,10 @@ function areaList(areaId, opts) {
     if (excl[key]) return;
     if (!(isOpen(c) || permitExpired(c) || keep[key])) return;
     if (opts.filter && !opts.filter(c)) return;
-    const it = caseItem(c);
-    if (!c.owners.length && isOpen(c)) unassigned.push(it);
-    else if (cat(c) === 'V' && !keep[key]) waiting.push(it); else working.push(it);
+    const it = caseItem(c), k = keep[key];
+    /* A visszavonható 10 másodpercben a sor az eredeti listarészben marad: a felület a művelet előtti részt adja át (group) */
+    const part = k && k.group ? k.group : !c.owners.length && isOpen(c) ? 'unassigned' : cat(c) === 'V' ? 'waiting' : 'working';
+    (part === 'unassigned' ? unassigned : part === 'waiting' ? waiting : working).push(it);
   });
   st.tasks.forEach(t => {
     const c = Cs(t.caseId); if (!c || c.areaId !== areaId || caseAccess(c) !== 'write') return;
@@ -630,10 +631,19 @@ function undo(id) {
     const r = clone(x.before); r.ver = (i > -1 ? arr[i].ver : r.ver) + 1;
     if (i > -1) arr[i] = r; else arr.push(r);
   });
-  delete txs[id]; applyState(); audit('visszavonás', null, null, t.label); persist(); emit('undo');
+  delete txs[id]; applyState();
+  /* A visszavonás külön, hozzáfűzött esemény: az eredeti esemény azonosítójával, az érintettel, a profillal, és megfordítva a régi és az új értékkel */
+  const evs = (t.audits || []).map(a => st.audit.find(e => e.id === a)).filter(Boolean);
+  if (!evs.length) audit('visszavonás', null, null, t.label);
+  evs.forEach(e => audit('visszavonás', e.pid, e.cid, 'Visszavonva: ' + e.act + ', ' + e.detail, Object.assign({ ref: e.id, undoOf: e.act }, e.prof ? { prof: e.prof } : {}, e.uid ? { uid: e.uid } : {}, e.to !== undefined ? { from: e.to, to: e.from } : {})));
+  persist(); emit('undo');
   return 'ok';
 }
-function audit(act, pid, cid, detail, extra) { st.audit.push(Object.assign({ at: now(), by: me() || 'rendszer', mode: mode(), act, pid: pid || null, cid: cid || null, detail: detail || '' }, extra || {})); }
+/* A naplóesemény azonosítója a sorszáma (a napló csak bővül). A tranzakcióban írt eseményeket a tranzakció megjegyzi: a visszavonás ezekre hivatkozik */
+function audit(act, pid, cid, detail, extra) {
+  const ev = Object.assign({ id: 'n' + (st.audit.length + 1), at: now(), by: me() || 'rendszer', mode: mode(), act, pid: pid || null, cid: cid || null, detail: detail || '' }, extra || {});
+  st.audit.push(ev); if (cur) cur.audits = (cur.audits || []).concat([ev.id]); return ev;
+}
 function hist(c, text, who) { c.history.push({ at: now(), by: who || me(), text }); }
 
 /* ---------------- TAJ (K3.2; a próbában csupa azonos számjegy érvényes) ---------------- */
@@ -1018,7 +1028,7 @@ ops.decideRequest = (id, ok, role) => {
   return tx(ok ? 'Jóváhagyás' : 'Elutasítás', () => {
     const r = ok ? (role || a.req.role) : null;
     mut('accounts', a, x => { x.status = ok ? 'approved' : 'rejected'; x.decided = { by: me(), at: now(), role: r }; });
-    audit(ok ? 'regisztráció jóváhagyása' : 'regisztráció elutasítása', null, null, a.name + (ok ? ', ' + r : ''), { prof: a.req.profile || null, uid: id });
+    audit(ok ? 'regisztráció jóváhagyása' : 'regisztráció elutasítása', null, null, a.name + (ok ? ', ' + r : ''), Object.assign({ prof: a.req.profile || null, uid: id }, ok ? { to: r } : {}));
   });
 };
 /* Adminjog (K9.12): a profilban csak az osztályvezető adja */
@@ -1144,13 +1154,15 @@ ops.saveReminders = (profileId, map) => {
   });
 };
 /* Tagok (K9.9): szerepkör a profilban. Az osztályvezetői és a főnővéri szerepkört csak a fő admin adja és veszi el (K9.12):
-   a profil adminja nem adhatja, és akinek ilyen szerepköre van, annak a szerepkörét nem módosíthatja */
+   a profil adminja nem adhatja, és akinek ilyen szerepköre van, annak a szerepkörét nem módosíthatja.
+   A fő admin a felületen kezeli (CT, 2026-11-20): a profil bármely tagját osztályvezetővé vagy főnővérré teheti, és visszaállíthatja más szerepkörre */
 ops.setRole = (uid, profileId, role) => {
   const u = U(uid);
+  if (isMainAdmin(me())) { if (!u.profile || u.profile !== profileId || cfg.profileRoles.indexOf(role) === -1 || role === u.role) return { denied: true }; }
   /* A saját szerepkörét senki nem módosítja: így a nővér sem teheti magát orvossá, más profil betegadatához (a prototípus bírálata, 1. pont) */
-  if (!adminOk(profileId) || uid === me() || u.profile !== profileId || u.head || toMainAdmin(u.role) || toMainAdmin(role) || cfg.profileRoles.indexOf(role) === -1) return { denied: true };
+  else if (!adminOk(profileId) || uid === me() || u.profile !== profileId || u.head || toMainAdmin(u.role) || toMainAdmin(role) || cfg.profileRoles.indexOf(role) === -1) return { denied: true };
   const old = u.role;
-  return tx('Szerepkör', () => { upsertMember(uid, { role, removed: null }); audit('szerepkör módosítása', null, null, uname(uid) + ': ' + old + ' → ' + role, { prof: profileId, uid }); });
+  return tx('Szerepkör', () => { upsertMember(uid, { role, removed: null }); audit('szerepkör módosítása', null, null, uname(uid) + ': ' + old + ' → ' + role, { prof: profileId, uid, from: old, to: role }); });
 };
 /* Mi marad utána, ha a tag kikerül a profilból: a nyitott ügyei és teendői felelős nélkül, az áreák munkalistáján (K6.4) */
 function memberLoad(uid, profileId) {
