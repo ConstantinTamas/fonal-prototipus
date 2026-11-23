@@ -1318,9 +1318,12 @@ function agendaHtml(area) {
   const type = list.indexOf(ui.r.q.mb) > -1 ? ui.r.q.mb : list[0], sk = type, S = cfg.series[sk], mq = list.length > 1 ? '&mb=' + type : '';
   const cs = T.state().cases.filter(c => c.type === type && c.meeting && T.caseAccess(c) === 'write' && (!c.closed || ui.undo['case:' + c.id] || c.closed.at.slice(0, 10) === today()));
   /* Az alkalmak: amelyeken eset van, és a sorozat legközelebbi négy alkalma, hogy a még üres alkalomra is fel lehessen venni esetet (K5.11) */
-  const dates = Array.from(new Set(cs.filter(c => c.meeting >= today() || !c.closed).map(c => c.meeting).concat(T.meetingsAhead(sk, 4)))).sort();
+  /* A legutóbbi lezajlott alkalom akkor is választható marad, ha minden esete lezárult: ott látszik az alkalom M4-e (H2), és azon a napon az összes esete */
+  const mine = T.state().cases.filter(c => c.type === type && c.meeting && T.caseAccess(c) === 'write');
+  const lastPast = mine.filter(c => c.meeting < today() && c.discussedAt).map(c => c.meeting).sort().pop();
+  const dates = Array.from(new Set(cs.filter(c => c.meeting >= today() || !c.closed).map(c => c.meeting).concat(T.meetingsAhead(sk, 4), lastPast ? [lastPast] : []))).sort();
   const sel = ui.r.q.alkalom && dates.indexOf(ui.r.q.alkalom) > -1 ? ui.r.q.alkalom : dates.find(d => d >= today()) || dates[dates.length - 1] || T.nextMeeting(sk);
-  const items = cs.filter(c => c.meeting === sel);
+  const items = (sel < today() ? mine : cs).filter(c => c.meeting === sel);
   const dl = T.meetingDeadline(sk, sel), past = D.mins(T.now()) > D.mins(dl);
   const one = c => {
     const p = T.P(c.patientId), miss = T.missingFields(c), key = 'case:' + c.id, k = kidsParts(c, key, false), hasMiss = miss.length > 0 && !c.closed;
@@ -1339,9 +1342,20 @@ function agendaHtml(area) {
   const np = ui.panel && ui.panel.kind === 'new-case' && ui.panel.from === 'agenda' ? ui.panel : null;
   const canNew = sel >= today() && (cfg.newMenu[T.U(T.me()).profile] || []).some(m => m[0] === type);
   const newBtn = canNew && !np ? `<button class="btn btn-secondary" type="button" data-act="agenda-new" data-type="${type}" data-meeting="${sel}" data-k="agenda-new">${ico('plus')}Új eset erre az alkalomra</button>` : '';
+  /* Az alkalom saját M4-e (H2; F3: „Az M4 mutató erre az alkalomra 100%”): egy halk sor a dátum alatt, csak ha ezen az alkalmon már megbeszéltek
+     esetet. A megbeszélt, nem csak tudomásul vett esetek számítanak, a lezártak is. A két munkanapos ponton rögzült eredmény látszik; addig csak az,
+     hogy mikor derül ki, így a még futó határidő nem tűnik mulasztásnak. */
+  const m4Line = (() => {
+    if (sel > today()) return '';
+    const ds = mine.filter(c => c.meeting === sel && c.discussedAt && c.triage !== 'tudomásul');
+    if (!ds.length) return '';
+    const done = ds.filter(c => c.m4), ok = done.filter(c => c.m4.ok).length;
+    if (!done.length) return `<p class="note-line agenda-m4">Hogy a döntés két munkanapon belül rögzült-e, ${esc(fmtDate(ds.map(c => D.addWorkdays(c.discussedAt.slice(0, 10), 2)).sort().pop()))} után látszik.</p>`;
+    return `<p class="note-line agenda-m4">Döntés két munkanapon belül rögzítve: <strong>${ok}/${done.length}</strong> megbeszélt eset (${Math.round(100 * ok / done.length)}%; cél: legalább 90%).</p>`;
+  })();
   return `<div class="section" style="margin-top:2rem">${list.length > 1 ? `<ul class="seg" aria-label="Megbeszélések" style="margin:0 0 1.25rem">${list.map(k => `<li><a href="#/munkalistak/${area}/napirend?mb=${k}"${k === type ? ' aria-current="page"' : ''}>${esc(cfg.series[k].name)}</a></li>`).join('')}</ul>` : ''}
     <div class="agenda-top"><div><p class="lede"><strong>${esc(cap(D.dayName(sel)))}, ${esc(fmtDate(sel))}</strong> · ${esc(S.name)} · bejelentési határidő: ${esc(T.relAt(dl))}${past ? ' (lejárt; a napirend összeállt)' : ''}</p>
-    ${S.participants.length ? `<p class="note-line">Résztvevők: ${S.participants.map(x => esc(userName(x))).join(', ')}</p>` : ''}</div><div class="head-actions">${viewSwitch(lvKey)}${newBtn}</div></div>
+    ${m4Line}${S.participants.length ? `<p class="note-line">Résztvevők: ${S.participants.map(x => esc(userName(x))).join(', ')}</p>` : ''}</div><div class="head-actions">${viewSwitch(lvKey)}${newBtn}</div></div>
     ${dates.length > 1 ? `<ul class="seg" aria-label="Alkalmak">${dates.map(d => `<li><a href="#/munkalistak/${area}/napirend?alkalom=${d}${mq}"${d === sel ? ' aria-current="page"' : ''}>${esc(fmtDate(d))}</a></li>`).join('')}</ul>` : ''}
     <p class="note-line">A napirendet senkinek nem kell összeállítania: a bejelentett esetekből magától áll össze. A hiányos bejelentés is rajta van, a hiány jelölésével.</p>
     ${np ? newCasePanel(np) : ''}</div>
