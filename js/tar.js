@@ -376,7 +376,7 @@ function myLists(uid, keep) {
     if (cat(c) === 'V' && !k) waiting.push(it); else if (k && k.group === 'waiting') waiting.push(it); else working.push(it);
   });
   st.tasks.forEach(t => {
-    if (who.indexOf(t.owner) === -1) return;
+    if (who.indexOf(t.owner) === -1 && !keep['task:' + t.id]) return;
     if (!taskOpen(t) && !keep['task:' + t.id]) return;
     working.push(taskItem(t, { deputyOf: deps.indexOf(t.owner) > -1 ? t.owner : null }));
   });
@@ -417,7 +417,8 @@ function areaList(areaId, opts) {
     if (!taskOpen(t) && !keep[key]) return;
     if (opts.filter && !opts.filter(c)) return;
     const it = taskItem(t);
-    if (!t.owner) unassigned.push(it); else working.push(it);
+    const part = keep[key] ? keep[key].group : !t.owner ? 'unassigned' : 'working';
+    if (part === 'unassigned') unassigned.push(it); else working.push(it);
   });
   return { working: sortWorking(working), waiting: sortWaiting(waiting), unassigned: sortWorking(unassigned) };
 }
@@ -944,6 +945,66 @@ ops.relate = (aId, bId) => {
   });
 };
 ops.assignTask = (id, owner) => tx('Teendő felelőse', () => { const t = Tk(id); mut('tasks', t, x => { x.owner = owner; }); });
+/* Az átadás minden feltétele az első írás előtt ellenőrződik. A teendő önállóan is átadható: az ügyhöz nem írunk. */
+const leavingOwners = c => c.owners.indexOf(me()) > -1 ? [me()] : c.owners.slice();
+function assignmentReminder(c, to, task) {
+  const id = newId('r');
+  add('reminders', { id, key: 'assigned:' + id, caseId: c.id, taskId: task ? task.id : null,
+    to: [to], dep: [], at: now(), dismissed: [] });
+}
+function reassignRecipient(c, to) {
+  if (!to) return 'Válaszd ki, kinek adod át.';
+  if (to === me()) return 'Magadnak nem adhatod át.';
+  if (!isMember(to, c.profileId)) return 'A felelőst a profil aktív munkatársai közül válaszd.';
+  return '';
+}
+ops.reassignCase = (id, to, taskIds, baseVer) => {
+  const c = Cs(id);
+  if (!c || caseAccess(c) !== 'write') return { error: 'Ezt az ügyet nem szerkesztheted.' };
+  if (c.ver !== baseVer) return { conflict: true, current: clone(c) };
+  if (c.closed) return { error: 'Lezárt ügy nem adható át.' };
+  const err = reassignRecipient(c, to);
+  if (err) return { error: err, field: 'to' };
+  if (flowOf(c.type) === 'd2t' && !isDoctor(to)) return { error: 'Ennél az ügytípusnál csak orvos választható.', field: 'to' };
+  const old = c.owners.slice(), leaving = leavingOwners(c), owners = old.filter(o => leaving.indexOf(o) === -1);
+  if (owners.indexOf(to) === -1) owners.push(to);
+  if (owners.length === old.length && owners.every(o => old.indexOf(o) > -1)) return { error: 'Most is ő viszi az ügyet.', field: 'to' };
+  const tasks = [...new Set(taskIds || [])].sort().map(Tk);
+  if (tasks.some(t => !t || t.caseId !== id)) return { error: 'A teendő nem ehhez az ügyhöz tartozik.' };
+  if (tasks.some(t => !taskOpen(t))) return { error: 'Közben lezárult egy kiválasztott teendő. Töltsd újra az oldalt.' };
+  return tx('Átadás kollégának', () => {
+    mut('cases', c, x => {
+      x.owners = owners;
+      x.watchers = [...new Set(x.watchers.concat([me()], leaving.filter(o => isMember(o, c.profileId))))].filter(o => o !== to);
+    });
+    tasks.forEach(t => {
+      if (t.owner === to) return;
+      mut('tasks', t, x => { x.owner = to; });
+      assignmentReminder(c, to, t);
+    });
+    if (old.indexOf(to) === -1) assignmentReminder(c, to);
+    audit('ügy átadása kollégának', c.patientId, c.id, 'Felelős: ' + old.map(uname).join(', ') + ' → ' + owners.map(uname).join(', '),
+      { from: old, to: owners.slice(), tasks: tasks.map(t => t.id) });
+    return { id, tasks: tasks.map(t => t.id) };
+  });
+};
+ops.reassignTask = (id, to, baseVer) => {
+  const t = Tk(id), c = t && Cs(t.caseId);
+  if (!t || !c || taskAccess(t) !== 'write') return { error: 'Ezt a teendőt nem szerkesztheted.' };
+  if (t.ver !== baseVer) return { conflict: true, current: clone(t) };
+  if (!taskOpen(t)) return { error: 'Lezárt teendő nem adható át.' };
+  const err = reassignRecipient(c, to);
+  if (err) return { error: err, field: 'to' };
+  if (t.owner === to) return { error: 'Most is ő viszi ezt a teendőt.', field: 'to' };
+  return tx('Átadás kollégának', () => {
+    const before = t.owner;
+    mut('tasks', t, x => { x.owner = to; });
+    assignmentReminder(c, to, t);
+    audit('teendő átadása kollégának', c.patientId, c.id, '„' + t.text + '”: ' + (before ? uname(before) : 'nincs felelőse') + ' → ' + uname(to),
+      { tid: id, from: before, to });
+    return id;
+  });
+};
 ops.takeCase = id => tx('Elvállalás', () => { const c = Cs(id); mut('cases', c, x => { x.owners = [me()]; hist(x, 'Elvállalta'); }); });
 function addContactRaw(c, o) { mut('cases', c, x => { x.contacts.push({ at: o.at || now(), by: me(), whom: o.whom, how: o.how, note: o.note || '', after: !!o.after }); hist(x, 'Kapcsolatfelvétel: ' + o.whom + ', ' + o.how); }); }
 ops.addContact = (id, o) => tx('Kapcsolatfelvétel', () => { addContactRaw(Cs(id), o); audit('kapcsolatfelvétel', Cs(id).patientId, id); });
@@ -1264,6 +1325,7 @@ function remindersFor(uid) {
 }
 function stillRelevant(r, c) {
   const kind = r.key.split(':')[0], d = c.data || {};
+  if (kind === 'assigned') { const t = r.taskId && Tk(r.taskId); return r.taskId ? !!t && taskOpen(t) && r.to.indexOf(t.owner) > -1 : c.owners.some(o => r.to.indexOf(o) > -1); }
   if (kind === 'engedely') return c.step === 'erv' && !renewalOf(c.id);
   if (kind === 'vizsgalat') return (c.step === 'eloj' || c.step === 'idop') && !d.appointment;
   if (kind === 'radio') return missingFields(c).length > 0 && (c.step === 'bej' || c.step === 'nap');
@@ -1289,6 +1351,6 @@ BT.tar = {
   checkTaj, wardProfiles, nextMeeting, meetingDeadline, missingFields, remindersFor, ops, undo, draftOf, norm,
   isMainAdmin, isActive, adminSource, isAdminOf, adminProfiles, canGrant, headOf, toMainAdmin, requestsFor, account, pendingFor, checkMail, seesSummary,
   flowOf, isMeet, variant, remindOf, seriesName, membersOf, memberLoad, stepBase, variantOnArea, plusUsed,
-  relWord, relBetween, originOf, linkedOf, openTasksOf, areaFor, spawnTypes, titleFromTask, spawnClosesTask: SPAWN_CLOSES_TASK
+  relWord, relBetween, originOf, linkedOf, openTasksOf, areaFor, spawnTypes, titleFromTask, spawnClosesTask: SPAWN_CLOSES_TASK, leavingOwners
 };
 })();

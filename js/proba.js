@@ -231,6 +231,7 @@ function render() {
   el.innerHTML = `<p class="proba-flag">Próba · minden adat kitalált</p>
     <h1 tabindex="-1">Belépés a próbába</h1>
     <p class="lede">Válaszd ki, kinek a nevében lépsz be. Ez a lap a próba eszköze; a rendszerben a „Felhasználóváltás” ide hoz vissza. Internet nem kell; minden ebben a böngészőben marad.</p>
+    <p class="note-line">Elakadtál? A <a href="sugo.html">Súgó</a> röviden elmondja, mit látsz, miért, és mit tegyél, szerepkörönként.</p>
     <p class="note-line" id="allapot">${stateLine()} · <button class="link-btn lg" type="button" data-reset="base">Szabad próba: vissza az alapállapotra</button></p>
     <section class="section" aria-labelledby="h-fiok"><div class="section-head"><h2 id="h-fiok">Szerepkörök és kezdőképernyők</h2></div>
       <p class="group-note">A szabad próba a D napja: kedd, november 17., reggel 8 óra; a gyermekreumatológia munkája a forgatókönyvek kitalált betegeivel. Belépés után mindenki a saját kezdőképernyőjén indul.</p>

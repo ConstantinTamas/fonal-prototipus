@@ -1,0 +1,94 @@
+
+/* sugo.css · A Fonal Súgója (2026-11-25). A rendszer elemeire épül: .page-head, .group-title, .group-note, .count, .chips/.chip,
+   .text-input, .select, .pill, .yn, .link-btn. Doboz helyett vonal és tér, mint a rendszer többi listáján; kiemelt doboz csak a
+   „Kezdd itt” (a betegkártya ügyeleti dobozának mintájára). Szélesen bal oldalt a szűrő, jobbra a kártyák egy olvasható hasábban. */
+.sugo{display:grid; grid-template-columns:minmax(0,48rem); gap:2.25rem 4rem; align-items:start; margin-top:2.5rem}
+.sugo.is-js{grid-template-columns:17rem minmax(0,48rem)}
+
+/* A szűrő: keresés, szerepkör, téma, a találatok száma */
+.sugo-szuro{display:grid; gap:1.5rem; position:sticky; top:1.5rem; min-width:0}
+.sugo-szuro .field,.sugo-szuro fieldset{margin:0; min-width:0}
+.sugo-kereso{position:relative}
+.sugo-kereso > .ico{position:absolute; left:.9375rem; top:50%; transform:translateY(-50%); color:var(--ink-2); pointer-events:none}
+.sugo-kereso .text-input{padding-left:2.625rem; border-radius:999px}
+.sugo-szerep .chips{gap:.5rem .375rem}
+.sugo-szerep .chip span{min-height:2.25rem; padding:0 .875rem; font-size:.9375rem}
+.sugo-szam{margin:0; color:var(--ink-2); font-size:.9375rem}
+
+/* A kártyák hasábja: a részek között egyforma tér; a rejtett rész nem hagy hézagot */
+.sugo-fo{display:flex; flex-direction:column; gap:3rem; min-width:0}
+.sugo-tema > .group-title,.sugo-talalatok > .group-title{margin-bottom:.75rem}
+.sugo-lista{list-style:none; margin:0; padding:0; border-bottom:1px solid var(--line)}
+
+/* Egy kártya: a kérdés és a rövid válasz egy lenyitható sorban */
+.sugo-kartya{border-top:1px solid var(--line); scroll-margin-top:1.5rem}
+.sugo-kartya > summary{display:grid; grid-template-columns:minmax(0,1fr) auto; column-gap:1.25rem; padding:1.125rem 0 1.25rem; cursor:pointer; list-style:none}
+.sugo-kartya > summary::-webkit-details-marker{display:none}
+.sugo-k{grid-column:1; margin:0; font:600 1.125rem/1.4 var(--sans); color:var(--ink)}
+.sugo-r{grid-column:1; display:block; margin-top:.375rem; color:var(--ink-2); font-size:.9375rem; line-height:1.55}
+.sugo-nyil{grid-column:2; grid-row:1; margin-top:.25rem; color:var(--accent); transition:transform .15s ease}
+.sugo-kartya[open] > summary .sugo-nyil{transform:rotate(180deg)}
+.sugo-kartya > summary:hover .sugo-k{text-decoration:underline; text-decoration-thickness:1px; text-decoration-color:var(--line-strong); text-underline-offset:4px}
+.sugo-kartya[open] > summary .sugo-r{color:var(--ink)}
+.sugo-kartya:target{background:var(--accent-soft); box-shadow:0 0 0 .75rem var(--accent-soft); border-radius:2px}
+.sugo-kartya:target .sugo-lepesek > li::before{background:var(--white)}
+
+/* A kártya belseje */
+.sugo-test{padding:0 0 1.75rem; max-width:44rem}
+.sugo-test h4{margin:1.5rem 0 .625rem; font-size:.875rem; font-weight:600; color:var(--ink-2)}
+.sugo-cimke{font-weight:600; color:var(--ink-2)}
+.sugo-hol{margin:0; font-size:.9375rem}
+.sugo-hol + ol,.sugo-hol + ul{margin-top:1.25rem}
+.sugo-lepesek{list-style:none; margin:0; padding:0; display:grid; gap:.75rem; counter-reset:sugo}
+/* A lépés szövegében félkövér gombnév is lehet, ezért a sorszám abszolút helyen áll, nem rácsban */
+.sugo-lepesek > li{counter-increment:sugo; position:relative; min-height:1.75rem; padding-left:2.5rem}
+.sugo-lepesek > li::before{content:counter(sugo); position:absolute; left:0; top:-.0625rem; display:grid; place-items:center; width:1.75rem; height:1.75rem; border-radius:50%; background:var(--accent-soft); color:var(--accent-dark); font-size:.875rem; font-weight:600; font-variant-numeric:tabular-nums}
+.sugo-pontok{list-style:none; margin:0; padding:0; display:grid; gap:.625rem}
+.sugo-pontok > li{position:relative; padding-left:1.25rem}
+.sugo-pontok > li::before{content:""; position:absolute; left:.3125rem; top:.68em; width:.375rem; height:.375rem; border-radius:50%; background:var(--line-strong)}
+ol + h4,ul + h4{margin-top:1.75rem}
+.sugo-lepesek + .sugo-pontok,.sugo-pontok + .sugo-lepesek{margin-top:1.25rem}
+.sugo-jo{margin:1.5rem 0 0; padding-left:.875rem; border-left:2px solid var(--line); color:var(--ink-2)}
+.sugo-jelek{list-style:none; margin:1.25rem 0 0; padding:0; display:grid; gap:.75rem}
+.sugo-jelek > li{display:grid; grid-template-columns:minmax(0,12rem) minmax(0,1fr); gap:.25rem 1rem; align-items:baseline}
+.sugo-jelek + ul,.sugo-jelek + ol{margin-top:1.5rem}
+.sugo-keses{color:var(--late); font-weight:600; font-size:.9375rem}
+.sugo-kep{margin:1.5rem 0 0}
+.sugo-kep img{display:block; max-width:100%; height:auto; border:1px solid var(--line); border-radius:12px; background:var(--white)}
+.sugo-kep figcaption{margin-top:.5rem; color:var(--ink-2); font-size:.875rem}
+.sugo-lasd{margin:1.5rem 0 0; font-size:.9375rem}
+.sugo-meta{display:flex; flex-wrap:wrap; justify-content:space-between; gap:.25rem 1.5rem; margin:.75rem 0 0; color:var(--ink-2); font-size:.875rem}
+.sugo-meta a{font-weight:600}
+
+/* Kezdd itt: a szerepkörhöz válogatott kártyák, fehér dobozban */
+.sugo-kezdd{padding:1.5rem 1.5rem .25rem; background:var(--white); border:1px solid var(--line); border-radius:16px}
+.sugo-kezdd .group-note{margin:.25rem 0 1rem}
+.sugo-kezdd .sugo-lista{border-bottom:0}
+
+/* A találatok és az üres keresés */
+.sugo-ures{padding:1rem 0 0; color:var(--ink-2)}
+.sugo-ures p{margin:0 0 .5rem}
+.sugo-mashol{margin:1rem 0 .5rem; color:var(--ink-2)}
+
+/* JavaScript nélkül: a témák tartalomjegyzéke a lista fölött */
+.sugo-tartalom ul{list-style:none; margin:0; padding:0; display:flex; flex-wrap:wrap; gap:.5rem 1.5rem}
+.sugo-tartalom a{font-weight:600}
+.sugo-labjegyzet{margin:0; color:var(--ink-2); font-size:.875rem}
+
+@media (max-width: 67rem){
+  .sugo.is-js{grid-template-columns:minmax(0,1fr)}
+  .sugo-szuro{position:static}
+}
+@media (max-width: 40rem){
+  /* Keskeny képernyőn a szűrő a lista fölött áll: tömörebben, hogy az első kártya hamar látsszon */
+  .sugo{margin-top:1.5rem; gap:1.75rem}
+  .sugo-szuro{gap:1rem}
+  .sugo-fo{gap:2.25rem}
+  .sugo-k{font-size:1.0625rem}
+  .sugo-kezdd{padding:1.25rem 1rem .25rem}
+  .sugo-jelek > li{grid-template-columns:minmax(0,1fr)}
+}
+@media (forced-colors: active){
+  .sugo-kezdd{border-color:CanvasText}
+  .sugo-lepesek > li::before{border:1px solid CanvasText}
+}
